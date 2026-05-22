@@ -78,6 +78,11 @@ export class ObsidianAgentTools {
 
     return {
       sources,
+      workingSetItems: unique(sources.map((result) => result.chunk.filePath)).map((path) => ({
+        path,
+        role: "searched",
+        detail: `Matched query: ${query}`,
+      })),
       content: sources
         .map((result, index) => {
           const chunk = result.chunk;
@@ -120,7 +125,10 @@ export class ObsidianAgentTools {
     }
 
     const content = await this.app.vault.cachedRead(file);
-    return { content: `${metadata}\n\nCONTENT:\n${clip(content, Math.max(1000, Math.min(20000, maxChars)))}` };
+    return {
+      workingSetItems: [{ path: file.path, role: "opened", detail: "Opened file content" }],
+      content: `${metadata}\n\nCONTENT:\n${clip(content, Math.max(1000, Math.min(20000, maxChars)))}`,
+    };
   }
 
   private listFolder(args: Record<string, unknown>): AgentToolExecution {
@@ -144,7 +152,10 @@ export class ObsidianAgentTools {
         return `- ${child.path}`;
       });
 
-    return { content: children.length ? children.join("\n") : `Folder is empty: ${folder.path || "/"}` };
+    return {
+      workingSetItems: [{ path: folder.path || "/", role: "listed", detail: "Listed folder" }],
+      content: children.length ? children.join("\n") : `Folder is empty: ${folder.path || "/"}`,
+    };
   }
 
   private getLinks(args: Record<string, unknown>): AgentToolExecution {
@@ -169,6 +180,7 @@ export class ObsidianAgentTools {
       .map(([sourcePath]) => sourcePath);
 
     return {
+      workingSetItems: [{ path: file.path, role: "linked", detail: "Inspected links and backlinks" }],
       content: [
         `Links for ${file.path}`,
         "",
@@ -213,6 +225,7 @@ export class ObsidianAgentTools {
 
     return {
       pendingEdit,
+      workingSetItems: [{ path: file.path, role: "edited", detail: summary }],
       content: [
         `Prepared a pending edit for ${file.path}.`,
         `Summary: ${summary}`,
@@ -256,6 +269,7 @@ export class ObsidianAgentTools {
 
     return {
       pendingEdit,
+      workingSetItems: [{ path: file.path, role: "edited", detail: summary }],
       content: [
         `Prepared a pending patch for ${file.path}.`,
         `Summary: ${summary}`,
@@ -315,6 +329,11 @@ export class ObsidianAgentTools {
     const pendingEdits = pendingInputs.map((patch) => createPatchEdit(patch.path, patch.summary, patch.originalContent, patch.find, patch.replace));
     return {
       pendingEdits,
+      workingSetItems: unique(pendingEdits.map((edit) => edit.path)).map((path) => ({
+        path,
+        role: "edited",
+        detail: summary,
+      })),
       content: [
         `Prepared ${pendingEdits.length} pending patches.`,
         `Summary: ${summary}`,

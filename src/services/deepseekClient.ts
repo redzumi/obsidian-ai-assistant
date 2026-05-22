@@ -1,4 +1,4 @@
-import { AgentCompletion, AgentToolExecutor, DeepSeekRagSettings, PendingEdit, SearchResult } from "../core/types";
+import { AgentCompletion, AgentToolExecutor, DeepSeekRagSettings, PendingEdit, SearchResult, WorkingSetItem } from "../core/types";
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -34,29 +34,38 @@ export class DeepSeekClient {
     ];
     const sources = new Map<string, SearchResult>();
     const pendingEdits: PendingEdit[] = [];
+    const workingSet = new Map<string, WorkingSetItem>();
 
     for (let step = 0; step < 5; step += 1) {
       const content = await this.requestCompletion(messages, 4000);
       const action = parseAgentAction(content);
 
       if (action.final) {
-        return { answer: action.final.trim(), sources: Array.from(sources.values()), pendingEdits };
+        return { answer: action.final.trim(), sources: Array.from(sources.values()), pendingEdits, workingSet: Array.from(workingSet.values()) };
       }
 
       if (!action.tool) {
-        return { answer: content.trim(), sources: Array.from(sources.values()), pendingEdits };
+        return { answer: content.trim(), sources: Array.from(sources.values()), pendingEdits, workingSet: Array.from(workingSet.values()) };
       }
 
       messages.push({ role: "assistant", content });
       const result = await tools.execute(action.tool, action.args ?? {});
       for (const source of result.sources ?? []) {
         sources.set(source.chunk.id, source);
+        mergeWorkingSetItem(workingSet, {
+          path: source.chunk.filePath,
+          role: "searched",
+          detail: `Used by ${action.tool}`,
+        });
       }
       if (result.pendingEdit) {
         pendingEdits.push(result.pendingEdit);
       }
       for (const pendingEdit of result.pendingEdits ?? []) {
         pendingEdits.push(pendingEdit);
+      }
+      for (const item of result.workingSetItems ?? []) {
+        mergeWorkingSetItem(workingSet, item);
       }
       messages.push({
         role: "user",
@@ -75,7 +84,7 @@ export class DeepSeekClient {
     });
     const finalContent = await this.requestCompletion(messages, 1800);
     const finalAction = parseAgentAction(finalContent);
-    return { answer: (finalAction.final ?? finalContent).trim(), sources: Array.from(sources.values()), pendingEdits };
+    return { answer: (finalAction.final ?? finalContent).trim(), sources: Array.from(sources.values()), pendingEdits, workingSet: Array.from(workingSet.values()) };
   }
 
   private async requestCompletion(messages: ChatMessage[], maxTokens: number): Promise<string> {
@@ -219,4 +228,17 @@ function extractJsonObject(content: string): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function mergeWorkingSetItem(workingSet: Map<string, WorkingSetItem>, item: WorkingSetItem): void {
+  const key = `${item.path}:${item.role}`;
+  const existing = workingSet.get(key);
+  if (!existing) {
+    workingSet.set(key, item);
+    return;
+  }
+
+  if (!existing.detail.includes(item.detail)) {
+    workingSet.set(key, { ...existing, detail: `${existing.detail}; ${item.detail}` });
+  }
 }

@@ -1,5 +1,5 @@
 import { ItemView, MarkdownRenderer, Notice, setIcon, WorkspaceLeaf } from "obsidian";
-import { AgentToolExecutor, PendingEdit, SearchResult } from "../core/types";
+import { AgentToolExecutor, PendingEdit, SearchResult, WorkingSetItem } from "../core/types";
 import { DeepSeekClient } from "../services/deepseekClient";
 import { GraphSearchEngine } from "../search/graphSearch";
 
@@ -17,6 +17,7 @@ export class ChatView extends ItemView {
   private agentMode: boolean;
   private lastSources: SearchResult[] = [];
   private pendingEdits: PendingEdit[] = [];
+  private workingSet: WorkingSetItem[] = [];
   private isSending = false;
 
   constructor(
@@ -76,6 +77,7 @@ export class ChatView extends ItemView {
       this.messages = [];
       this.lastSources = [];
       this.pendingEdits = [];
+      this.workingSet = [];
       this.render();
     });
 
@@ -93,6 +95,10 @@ export class ChatView extends ItemView {
 
     if (this.pendingEdits.length > 0) {
       this.renderPendingEdits();
+    }
+
+    if (this.workingSet.length > 0) {
+      this.renderWorkingSet();
     }
 
     if (this.lastSources.length > 0) {
@@ -172,6 +178,23 @@ export class ChatView extends ItemView {
     }
   }
 
+  private renderWorkingSet(): void {
+    const workingSetEl = this.containerEl.createDiv({ cls: "deepseek-rag-working-set" });
+    workingSetEl.createEl("div", { cls: "setting-item-name", text: "Working set" });
+
+    for (const item of this.workingSet.slice(0, 80)) {
+      const itemEl = workingSetEl.createDiv({ cls: "deepseek-rag-working-set-item" });
+      itemEl.createSpan({ cls: `deepseek-rag-working-set-role deepseek-rag-working-set-${item.role}`, text: item.role });
+      itemEl.createSpan({ cls: "deepseek-rag-working-set-path", text: item.path });
+      itemEl.createSpan({ cls: "deepseek-rag-working-set-detail", text: item.detail });
+    }
+
+    if (this.workingSet.length > 80) {
+      workingSetEl.createDiv({ cls: "setting-item-description", text: `${this.workingSet.length - 80} more items hidden.` });
+    }
+  }
+
+
   private renderInput(): void {
     const inputRow = this.containerEl.createDiv({ cls: "deepseek-rag-input-row" });
     const textarea = inputRow.createEl("textarea", {
@@ -217,9 +240,22 @@ export class ChatView extends ItemView {
         const result = await this.deepSeekClient.completeWithAgent(content, history, this.agentTools);
         this.lastSources = result.sources;
         this.pendingEdits = this.pendingEdits.concat(result.pendingEdits);
+        this.workingSet = mergeWorkingSet(
+          this.workingSet,
+          result.workingSet,
+          result.pendingEdits.map((edit) => ({ path: edit.path, role: "edited", detail: edit.summary })),
+        );
         answer = result.answer;
       } else {
         this.lastSources = this.includeContext ? this.searchEngine.search(content, this.getTopK()) : [];
+        this.workingSet = mergeWorkingSet(
+          this.workingSet,
+          unique(this.lastSources.map((source) => source.chunk.filePath)).map((path) => ({
+            path,
+            role: "searched",
+            detail: `Context for: ${content}`,
+          })),
+        );
         answer = await this.deepSeekClient.complete(content, history, this.lastSources);
       }
       this.messages.push({ role: "assistant", content: answer });
@@ -237,6 +273,7 @@ export class ChatView extends ItemView {
     try {
       await this.agentTools.applyEdit(edit);
       this.pendingEdits = this.pendingEdits.filter((pending) => pending.id !== edit.id);
+      this.workingSet = mergeWorkingSet(this.workingSet, [{ path: edit.path, role: "edited", detail: `Applied: ${edit.summary}` }]);
       new Notice(`Applied edit: ${edit.path}`, 3000);
       this.render();
     } catch (error) {
@@ -244,6 +281,26 @@ export class ChatView extends ItemView {
       new Notice(message, 6000);
     }
   }
+}
+
+function mergeWorkingSet(existing: WorkingSetItem[], ...groups: WorkingSetItem[][]): WorkingSetItem[] {
+  const merged = new Map(existing.map((item) => [`${item.path}:${item.role}`, item]));
+  for (const item of groups.flat()) {
+    const key = `${item.path}:${item.role}`;
+    const current = merged.get(key);
+    if (!current) {
+      merged.set(key, item);
+      continue;
+    }
+    if (!current.detail.includes(item.detail)) {
+      merged.set(key, { ...current, detail: `${current.detail}; ${item.detail}` });
+    }
+  }
+  return Array.from(merged.values());
+}
+
+function unique(values: string[]): string[] {
+  return Array.from(new Set(values));
 }
 
 type DiffLine = { type: "same" | "add" | "remove"; prefix: string; text: string };

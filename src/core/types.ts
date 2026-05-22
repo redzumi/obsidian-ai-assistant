@@ -51,6 +51,7 @@ export interface AgentToolExecution {
   sources?: SearchResult[];
   pendingEdit?: PendingEdit;
   pendingEdits?: PendingEdit[];
+  workingSetItems?: WorkingSetItem[];
 }
 
 export interface AgentToolExecutor {
@@ -62,6 +63,15 @@ export interface AgentCompletion {
   answer: string;
   sources: SearchResult[];
   pendingEdits: PendingEdit[];
+  workingSet: WorkingSetItem[];
+}
+
+export type WorkingSetRole = "searched" | "opened" | "listed" | "linked" | "edited";
+
+export interface WorkingSetItem {
+  path: string;
+  role: WorkingSetRole;
+  detail: string;
 }
 
 export interface PendingEdit {
