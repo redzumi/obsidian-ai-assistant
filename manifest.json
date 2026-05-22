@@ -1,0 +1,10 @@
+{
+  "id": "deepseek-rag",
+  "name": "DeepSeek RAG",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Ask questions about your Obsidian notes with DeepSeek and local RAG search.",
+  "author": "",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}
