@@ -1,6 +1,7 @@
-import { EventRef, TAbstractFile, TFile, Vault } from "obsidian";
+import { EventRef, MetadataCache, TAbstractFile, TFile, Vault } from "obsidian";
 import { SemanticChunker } from "../core/chunker";
 import { IndexStore } from "../core/indexStore";
+import { indexVaultFile } from "./indexAll";
 
 type PersistCallback = () => Promise<void>;
 type UpdateCallback = () => void;
@@ -11,6 +12,7 @@ export class RealtimeIndexer {
 
   constructor(
     private readonly vault: Vault,
+    private readonly metadataCache: MetadataCache,
     private readonly chunker: SemanticChunker,
     private readonly indexStore: IndexStore,
     private readonly persist: PersistCallback,
@@ -21,7 +23,7 @@ export class RealtimeIndexer {
   start(): void {
     this.registerEvent(
       this.vault.on("create", (file) => {
-        if (file instanceof TFile && file.extension === "md") {
+        if (file instanceof TFile) {
           this.scheduleIndex(file);
         }
       }),
@@ -29,7 +31,7 @@ export class RealtimeIndexer {
 
     this.registerEvent(
       this.vault.on("modify", (file) => {
-        if (file instanceof TFile && file.extension === "md") {
+        if (file instanceof TFile) {
           this.scheduleIndex(file);
         }
       }),
@@ -44,7 +46,7 @@ export class RealtimeIndexer {
     this.registerEvent(
       this.vault.on("rename", (file, oldPath) => {
         this.indexStore.deleteFile(oldPath);
-        if (file instanceof TFile && file.extension === "md") {
+        if (file instanceof TFile) {
           this.scheduleIndex(file);
         }
         void this.persistAndNotify();
@@ -73,14 +75,12 @@ export class RealtimeIndexer {
   }
 
   private async indexFile(file: TFile): Promise<void> {
-    const content = await this.vault.read(file);
-    const chunks = this.chunker.chunkDocument(content, file.path, file.stat.mtime);
-    this.indexStore.replaceFile(file.path, chunks);
+    await indexVaultFile(this.vault, this.metadataCache, this.chunker, this.indexStore, file);
     await this.persistAndNotify();
   }
 
   private handleDelete(file: TAbstractFile): void {
-    if (!(file instanceof TFile) || file.extension !== "md") {
+    if (!(file instanceof TFile)) {
       return;
     }
 

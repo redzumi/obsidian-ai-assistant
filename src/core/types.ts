@@ -9,9 +9,29 @@ export interface DeepSeekRagSettings {
   includeContextByDefault: boolean;
 }
 
-export interface NoteChunk {
+export type IndexedFileStatus = "indexed" | "metadata-only" | "error";
+
+export interface IndexedDocument {
+  path: string;
+  basename: string;
+  extension: string;
+  status: IndexedFileStatus;
+  chunkCount: number;
+  size: number;
+  created: number;
+  modified: number;
+  tags: string[];
+  headings: string[];
+  links: string[];
+  aliases: string[];
+  frontmatterKeys: string[];
+  error?: string;
+}
+
+export interface IndexedChunk {
   id: string;
   filePath: string;
+  fileExtension: string;
   content: string;
   startOffset: number;
   endOffset: number;
@@ -21,13 +41,22 @@ export interface NoteChunk {
 }
 
 export interface SearchResult {
-  chunk: NoteChunk;
+  chunk: IndexedChunk;
   score: number;
+}
+
+export interface IndexCoverage {
+  totalFiles: number;
+  indexedFiles: number;
+  metadataOnlyFiles: number;
+  errorFiles: number;
+  chunkCount: number;
 }
 
 export interface PersistedIndex {
   version: number;
-  chunks: NoteChunk[];
+  documents: IndexedDocument[];
+  chunks: IndexedChunk[];
   updatedAt: number;
 }
 

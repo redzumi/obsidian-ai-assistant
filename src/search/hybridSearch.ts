@@ -1,12 +1,12 @@
-import { NoteChunk, SearchResult } from "../core/types";
+import { IndexedChunk, SearchResult } from "../core/types";
 
 const WORD_RE = /[\p{L}\p{N}_-]+/gu;
 
 export class HybridSearchEngine {
-  private chunks: NoteChunk[] = [];
+  private chunks: IndexedChunk[] = [];
   private documentFrequency = new Map<string, number>();
 
-  setChunks(chunks: NoteChunk[]): void {
+  setChunks(chunks: IndexedChunk[]): void {
     this.chunks = chunks;
     this.rebuildDocumentFrequency();
   }
@@ -37,7 +37,7 @@ export class HybridSearchEngine {
     }
   }
 
-  private scoreChunk(chunk: NoteChunk, queryTerms: string[], querySet: Set<string>): number {
+  private scoreChunk(chunk: IndexedChunk, queryTerms: string[], querySet: Set<string>): number {
     const text = this.searchableText(chunk);
     const terms = tokenize(text);
     if (terms.length === 0) {
@@ -70,8 +70,8 @@ export class HybridSearchEngine {
     return score;
   }
 
-  private searchableText(chunk: NoteChunk): string {
-    return `${chunk.filePath}\n${chunk.headings.join(" ")}\n${chunk.tags.join(" ")}\n${chunk.content}`;
+  private searchableText(chunk: IndexedChunk): string {
+    return `${chunk.filePath}\n${chunk.fileExtension}\n${chunk.headings.join(" ")}\n${chunk.tags.join(" ")}\n${chunk.content}`;
   }
 }
 

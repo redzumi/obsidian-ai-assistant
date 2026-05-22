@@ -6,7 +6,10 @@ interface ChatMessage {
 }
 
 export class DeepSeekClient {
-  constructor(private readonly getSettings: () => DeepSeekRagSettings) {}
+  constructor(
+    private readonly getSettings: () => DeepSeekRagSettings,
+    private readonly getVaultOverview: () => string,
+  ) {}
 
   async complete(userMessage: string, history: ChatMessage[], context: SearchResult[]): Promise<string> {
     const settings = this.getSettings();
@@ -49,7 +52,14 @@ export class DeepSeekClient {
 
   private buildSystemPrompt(context: SearchResult[]): string {
     if (context.length === 0) {
-      return "You are a helpful assistant inside Obsidian. Answer plainly and say when the notes do not provide enough context.";
+      return [
+        "You are a helpful assistant inside Obsidian.",
+        "Use the vault index overview to understand what the user's storage contains.",
+        "Answer plainly and say when the indexed notes do not provide enough context.",
+        "",
+        "VAULT INDEX OVERVIEW:",
+        this.getVaultOverview(),
+      ].join("\n");
     }
 
     const sources = context
@@ -62,9 +72,13 @@ export class DeepSeekClient {
 
     return [
       "You are a helpful assistant inside Obsidian.",
+      "Use the vault index overview to understand the shape of the user's storage.",
       "Use the note context below when it is relevant.",
       "Cite file paths when using note content.",
       "If the answer is not supported by the notes, say so clearly.",
+      "",
+      "VAULT INDEX OVERVIEW:",
+      this.getVaultOverview(),
       "",
       "NOTE CONTEXT:",
       sources,

@@ -1,8 +1,8 @@
 import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import { SemanticChunker } from "./core/chunker";
 import { IndexStore } from "./core/indexStore";
-import { DEFAULT_SETTINGS, DeepSeekRagSettings, PersistedIndex } from "./core/types";
-import { indexAllMarkdownFiles } from "./indexing/indexAll";
+import { DEFAULT_SETTINGS, DeepSeekRagSettings, IndexCoverage, PersistedIndex } from "./core/types";
+import { indexVaultFiles } from "./indexing/indexAll";
 import { RealtimeIndexer } from "./indexing/realtimeIndexer";
 import { HybridSearchEngine } from "./search/hybridSearch";
 import { DeepSeekClient } from "./services/deepseekClient";
@@ -20,7 +20,10 @@ export default class DeepSeekRAGPlugin extends Plugin {
   private chunker = new SemanticChunker(DEFAULT_SETTINGS.chunkSize, DEFAULT_SETTINGS.overlapSize);
   private readonly indexStore = new IndexStore();
   private readonly searchEngine = new HybridSearchEngine();
-  private readonly deepSeekClient = new DeepSeekClient(() => this.settings);
+  private readonly deepSeekClient = new DeepSeekClient(
+    () => this.settings,
+    () => this.indexStore.getVaultOverview(),
+  );
   private realtimeIndexer: RealtimeIndexer | null = null;
 
   async onload(): Promise<void> {
@@ -54,9 +57,9 @@ export default class DeepSeekRAGPlugin extends Plugin {
 
     this.addCommand({
       id: "reindex-deepseek-rag",
-      name: "Re-index notes for DeepSeek RAG",
+      name: "Re-index vault for DeepSeek RAG",
       callback: () => {
-        void this.indexAllNotes();
+        void this.indexVault();
       },
     });
 
@@ -64,7 +67,7 @@ export default class DeepSeekRAGPlugin extends Plugin {
     this.configureRealtimeIndexer();
 
     if (this.indexStore.getAllChunks().length === 0) {
-      void this.indexAllNotes().catch((error) => {
+      void this.indexVault().catch((error) => {
         console.error("DeepSeek RAG initial indexing failed", error);
         new Notice("DeepSeek RAG: initial indexing failed. See console for details.", 6000);
       });
@@ -89,12 +92,12 @@ export default class DeepSeekRAGPlugin extends Plugin {
     } satisfies PluginData);
   }
 
-  async indexAllNotes(): Promise<void> {
+  async indexVault(): Promise<void> {
     this.rebuildChunker();
-    const indexed = await indexAllMarkdownFiles(this.app.vault, this.chunker, this.indexStore);
+    const indexed = await indexVaultFiles(this.app.vault, this.app.metadataCache, this.chunker, this.indexStore);
     this.searchEngine.setChunks(this.indexStore.getAllChunks());
     await this.savePluginData();
-    new Notice(`DeepSeek RAG: indexed ${indexed} notes.`, 3000);
+    new Notice(`DeepSeek RAG: indexed ${indexed.indexedFiles}/${indexed.totalFiles} files.`, 3000);
   }
 
   configureRealtimeIndexer(): void {
@@ -108,6 +111,7 @@ export default class DeepSeekRAGPlugin extends Plugin {
     this.rebuildChunker();
     this.realtimeIndexer = new RealtimeIndexer(
       this.app.vault,
+      this.app.metadataCache,
       this.chunker,
       this.indexStore,
       () => this.savePluginData(),
@@ -119,6 +123,10 @@ export default class DeepSeekRAGPlugin extends Plugin {
 
   getIndexedChunkCount(): number {
     return this.indexStore.getAllChunks().length;
+  }
+
+  getIndexCoverage(): IndexCoverage {
+    return this.indexStore.getCoverage();
   }
 
   private rebuildChunker(): void {

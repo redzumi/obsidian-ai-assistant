@@ -1,4 +1,4 @@
-import { NoteChunk } from "./types";
+import { IndexedChunk } from "./types";
 
 interface Section {
   headingStack: string[];
@@ -12,10 +12,10 @@ export class SemanticChunker {
     private readonly overlapChars: number,
   ) {}
 
-  chunkDocument(content: string, filePath: string, modified: number): NoteChunk[] {
+  chunkDocument(content: string, filePath: string, modified: number, fileExtension = "md"): IndexedChunk[] {
     const tags = this.extractTags(content);
     const sections = this.extractSections(content);
-    const chunks: NoteChunk[] = [];
+    const chunks: IndexedChunk[] = [];
 
     for (const section of sections) {
       const normalized = section.content.trim();
@@ -27,6 +27,7 @@ export class SemanticChunker {
         chunks.push({
           id: `${filePath}:${piece.startOffset}:${piece.endOffset}`,
           filePath,
+          fileExtension,
           content: piece.content,
           startOffset: piece.startOffset,
           endOffset: piece.endOffset,

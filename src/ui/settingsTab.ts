@@ -113,14 +113,21 @@ export class DeepSeekSettingTab extends PluginSettingTab {
       );
 
     containerEl.createEl("h3", { text: "Index" });
+    const coverage = this.plugin.getIndexCoverage();
     containerEl.createEl("p", {
       cls: "setting-item-description",
-      text: `${this.plugin.getIndexedChunkCount()} chunks indexed.`,
+      text: [
+        `${coverage.totalFiles} files tracked.`,
+        `${coverage.indexedFiles} indexed with text.`,
+        `${coverage.metadataOnlyFiles} metadata-only.`,
+        `${coverage.errorFiles} errors.`,
+        `${coverage.chunkCount} chunks.`,
+      ].join(" "),
     });
 
     new Setting(containerEl)
-      .setName("Re-index all notes")
-      .setDesc("Rebuilds the local note index from markdown files.")
+      .setName("Re-index vault")
+      .setDesc("Rebuilds the local index from supported vault files.")
       .addButton((button) =>
         button
           .setButtonText("Re-index")
@@ -129,7 +136,7 @@ export class DeepSeekSettingTab extends PluginSettingTab {
             button.setDisabled(true);
             button.setButtonText("Indexing...");
             try {
-              await this.plugin.indexAllNotes();
+              await this.plugin.indexVault();
             } finally {
               button.setDisabled(false);
               this.display();
