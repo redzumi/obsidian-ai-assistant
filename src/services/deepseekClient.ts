@@ -1,4 +1,4 @@
-import { AgentCompletion, AgentToolExecutor, DeepSeekRagSettings, SearchResult } from "../core/types";
+import { AgentCompletion, AgentToolExecutor, DeepSeekRagSettings, PendingEdit, SearchResult } from "../core/types";
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -33,23 +33,27 @@ export class DeepSeekClient {
       { role: "user", content: userMessage },
     ];
     const sources = new Map<string, SearchResult>();
+    const pendingEdits: PendingEdit[] = [];
 
     for (let step = 0; step < 5; step += 1) {
-      const content = await this.requestCompletion(messages, 1200);
+      const content = await this.requestCompletion(messages, 4000);
       const action = parseAgentAction(content);
 
       if (action.final) {
-        return { answer: action.final.trim(), sources: Array.from(sources.values()) };
+        return { answer: action.final.trim(), sources: Array.from(sources.values()), pendingEdits };
       }
 
       if (!action.tool) {
-        return { answer: content.trim(), sources: Array.from(sources.values()) };
+        return { answer: content.trim(), sources: Array.from(sources.values()), pendingEdits };
       }
 
       messages.push({ role: "assistant", content });
       const result = await tools.execute(action.tool, action.args ?? {});
       for (const source of result.sources ?? []) {
         sources.set(source.chunk.id, source);
+      }
+      if (result.pendingEdit) {
+        pendingEdits.push(result.pendingEdit);
       }
       messages.push({
         role: "user",
@@ -68,7 +72,7 @@ export class DeepSeekClient {
     });
     const finalContent = await this.requestCompletion(messages, 1800);
     const finalAction = parseAgentAction(finalContent);
-    return { answer: (finalAction.final ?? finalContent).trim(), sources: Array.from(sources.values()) };
+    return { answer: (finalAction.final ?? finalContent).trim(), sources: Array.from(sources.values()), pendingEdits };
   }
 
   private async requestCompletion(messages: ChatMessage[], maxTokens: number): Promise<string> {
@@ -108,9 +112,9 @@ export class DeepSeekClient {
 
   private buildAgentSystemPrompt(): string {
     return [
-      "You are a read-only AI agent inside Obsidian.",
-      "You can inspect the user's vault with tools before answering.",
-      "Never claim you edited files; this mode is read-only.",
+      "You are an AI agent inside Obsidian.",
+      "You can inspect the user's vault and propose file edits with tools before answering.",
+      "You cannot directly apply edits. All edits are pending until the user reviews and applies them.",
       "Use tools when the answer needs more context than the current conversation.",
       "Cite file paths when using vault content.",
       "If the vault does not contain enough information, say so clearly.",
@@ -121,10 +125,14 @@ export class DeepSeekClient {
       "- listFolder: args {\"path\":\"...\"}. List files in a folder. Use empty path for vault root.",
       "- getLinks: args {\"path\":\"...\"}. Show outgoing links and backlinks for a file.",
       "- getVaultOverview: args {}. Show the current vault index overview.",
+      "- proposeEdit: args {\"path\":\"...\",\"summary\":\"...\",\"newContent\":\"full replacement file content\"}. Prepare a pending edit for user review.",
+      "",
+      "Before proposeEdit, open the target file unless the exact current full content is already available in the conversation.",
+      "proposeEdit must send the complete replacement content for the file, not a partial patch.",
       "",
       "Respond with exactly one JSON object and no markdown.",
       "To call a tool: {\"tool\":\"searchNotes\",\"args\":{\"query\":\"project plan\",\"topK\":6},\"reason\":\"...\"}",
-      "To answer finally: {\"final\":\"Your answer with cited file paths.\"}",
+      "To answer finally: {\"final\":\"Your answer with cited file paths and mention any pending edits.\"}",
       "",
       "VAULT INDEX OVERVIEW:",
       this.getVaultOverview(),

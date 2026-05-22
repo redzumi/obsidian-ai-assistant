@@ -1,5 +1,5 @@
 import { App, TFile, TFolder } from "obsidian";
-import { AgentToolExecution } from "../core/types";
+import { AgentToolExecution, PendingEdit } from "../core/types";
 import { IndexStore } from "../core/indexStore";
 import { HybridSearchEngine } from "../search/hybridSearch";
 
@@ -25,11 +25,27 @@ export class ObsidianAgentTools {
         return this.getLinks(args);
       case "getVaultOverview":
         return { content: this.indexStore.getVaultOverview(40) };
+      case "proposeEdit":
+        return this.proposeEdit(args);
       default:
         return {
-          content: `Unknown tool: ${toolName}. Available tools: searchNotes, openNote, listFolder, getLinks, getVaultOverview.`,
+          content: `Unknown tool: ${toolName}. Available tools: searchNotes, openNote, listFolder, getLinks, getVaultOverview, proposeEdit.`,
         };
     }
+  }
+
+  async applyEdit(edit: PendingEdit): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(edit.path);
+    if (!(file instanceof TFile)) {
+      throw new Error(`File not found: ${edit.path}`);
+    }
+
+    const currentContent = await this.app.vault.cachedRead(file);
+    if (currentContent !== edit.originalContent) {
+      throw new Error(`File changed since the edit was proposed: ${edit.path}`);
+    }
+
+    await this.app.vault.modify(file, edit.newContent);
   }
 
   private searchNotes(args: Record<string, unknown>): AgentToolExecution {
@@ -145,6 +161,45 @@ export class ObsidianAgentTools {
         "",
         "Backlinks:",
         unique(backlinks).map((link) => `- ${link}`).join("\n") || "None",
+      ].join("\n"),
+    };
+  }
+
+  private async proposeEdit(args: Record<string, unknown>): Promise<AgentToolExecution> {
+    const path = getStringArg(args, "path");
+    const newContent = getStringArg(args, "newContent");
+    const summary = getStringArg(args, "summary") ?? "Proposed edit";
+    if (!path) {
+      return { content: "Missing required argument: path." };
+    }
+    if (typeof newContent !== "string") {
+      return { content: "Missing required argument: newContent." };
+    }
+
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) {
+      return { content: `File not found: ${path}` };
+    }
+    if (!READABLE_EXTENSIONS.has(file.extension)) {
+      return { content: `Cannot propose text edits for metadata-only file: ${path}` };
+    }
+
+    const originalContent = await this.app.vault.cachedRead(file);
+    const pendingEdit: PendingEdit = {
+      id: `${file.path}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+      path: file.path,
+      summary,
+      originalContent,
+      newContent,
+      createdAt: Date.now(),
+    };
+
+    return {
+      pendingEdit,
+      content: [
+        `Prepared a pending edit for ${file.path}.`,
+        `Summary: ${summary}`,
+        "The edit has not been applied. The user must review and apply it.",
       ].join("\n"),
     };
   }

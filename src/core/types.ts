@@ -49,15 +49,27 @@ export interface SearchResult {
 export interface AgentToolExecution {
   content: string;
   sources?: SearchResult[];
+  pendingEdit?: PendingEdit;
 }
 
 export interface AgentToolExecutor {
   execute(toolName: string, args: Record<string, unknown>): Promise<AgentToolExecution>;
+  applyEdit(edit: PendingEdit): Promise<void>;
 }
 
 export interface AgentCompletion {
   answer: string;
   sources: SearchResult[];
+  pendingEdits: PendingEdit[];
+}
+
+export interface PendingEdit {
+  id: string;
+  path: string;
+  summary: string;
+  originalContent: string;
+  newContent: string;
+  createdAt: number;
 }
 
 export interface IndexCoverage {

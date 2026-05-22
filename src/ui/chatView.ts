@@ -1,5 +1,5 @@
 import { ItemView, MarkdownRenderer, Notice, setIcon, WorkspaceLeaf } from "obsidian";
-import { AgentToolExecutor, SearchResult } from "../core/types";
+import { AgentToolExecutor, PendingEdit, SearchResult } from "../core/types";
 import { DeepSeekClient } from "../services/deepseekClient";
 import { HybridSearchEngine } from "../search/hybridSearch";
 
@@ -16,6 +16,7 @@ export class ChatView extends ItemView {
   private includeContext: boolean;
   private agentMode: boolean;
   private lastSources: SearchResult[] = [];
+  private pendingEdits: PendingEdit[] = [];
   private isSending = false;
 
   constructor(
@@ -74,6 +75,7 @@ export class ChatView extends ItemView {
     this.registerDomEvent(clearButton, "click", () => {
       this.messages = [];
       this.lastSources = [];
+      this.pendingEdits = [];
       this.render();
     });
 
@@ -87,6 +89,10 @@ export class ChatView extends ItemView {
 
     for (const message of this.messages) {
       void this.renderMessage(messagesEl, message);
+    }
+
+    if (this.pendingEdits.length > 0) {
+      this.renderPendingEdits();
     }
 
     if (this.lastSources.length > 0) {
@@ -125,6 +131,43 @@ export class ChatView extends ItemView {
       sourceEl.createDiv({
         cls: "deepseek-rag-source-snippet",
         text: result.chunk.content.slice(0, 280),
+      });
+    }
+  }
+
+  private renderPendingEdits(): void {
+    const editsEl = this.containerEl.createDiv({ cls: "deepseek-rag-edits" });
+    editsEl.createEl("div", { cls: "setting-item-name", text: "Pending edits" });
+
+    for (const edit of this.pendingEdits) {
+      const editEl = editsEl.createDiv({ cls: "deepseek-rag-edit" });
+      const header = editEl.createDiv({ cls: "deepseek-rag-edit-header" });
+      header.createDiv({ cls: "deepseek-rag-edit-title", text: edit.path });
+      header.createDiv({ cls: "deepseek-rag-edit-summary", text: edit.summary });
+
+      const diffEl = editEl.createDiv({ cls: "deepseek-rag-diff" });
+      for (const line of buildLineDiff(edit.originalContent, edit.newContent).slice(0, 240)) {
+        diffEl.createDiv({
+          cls: `deepseek-rag-diff-line deepseek-rag-diff-${line.type}`,
+          text: `${line.prefix} ${line.text}`,
+        });
+      }
+
+      const diffLineCount = buildLineDiff(edit.originalContent, edit.newContent).length;
+      if (diffLineCount > 240) {
+        diffEl.createDiv({ cls: "deepseek-rag-diff-line", text: `[${diffLineCount - 240} more diff lines hidden]` });
+      }
+
+      const actions = editEl.createDiv({ cls: "deepseek-rag-edit-actions" });
+      const applyButton = actions.createEl("button", { cls: "mod-cta", text: "Apply" });
+      const rejectButton = actions.createEl("button", { text: "Reject" });
+
+      this.registerDomEvent(applyButton, "click", () => {
+        void this.applyPendingEdit(edit);
+      });
+      this.registerDomEvent(rejectButton, "click", () => {
+        this.pendingEdits = this.pendingEdits.filter((pending) => pending.id !== edit.id);
+        this.render();
       });
     }
   }
@@ -173,6 +216,7 @@ export class ChatView extends ItemView {
       if (this.agentMode) {
         const result = await this.deepSeekClient.completeWithAgent(content, history, this.agentTools);
         this.lastSources = result.sources;
+        this.pendingEdits = this.pendingEdits.concat(result.pendingEdits);
         answer = result.answer;
       } else {
         this.lastSources = this.includeContext ? this.searchEngine.search(content, this.getTopK()) : [];
@@ -188,4 +232,87 @@ export class ChatView extends ItemView {
       this.render();
     }
   }
+
+  private async applyPendingEdit(edit: PendingEdit): Promise<void> {
+    try {
+      await this.agentTools.applyEdit(edit);
+      this.pendingEdits = this.pendingEdits.filter((pending) => pending.id !== edit.id);
+      new Notice(`Applied edit: ${edit.path}`, 3000);
+      this.render();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(message, 6000);
+    }
+  }
+}
+
+type DiffLine = { type: "same" | "add" | "remove"; prefix: string; text: string };
+
+function buildLineDiff(oldContent: string, newContent: string): DiffLine[] {
+  const oldLines = oldContent.split("\n");
+  const newLines = newContent.split("\n");
+  const table: number[][] = Array.from({ length: oldLines.length + 1 }, () => Array(newLines.length + 1).fill(0));
+
+  for (let i = oldLines.length - 1; i >= 0; i -= 1) {
+    for (let j = newLines.length - 1; j >= 0; j -= 1) {
+      table[i][j] = oldLines[i] === newLines[j] ? table[i + 1][j + 1] + 1 : Math.max(table[i + 1][j], table[i][j + 1]);
+    }
+  }
+
+  const diff: DiffLine[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < oldLines.length && j < newLines.length) {
+    if (oldLines[i] === newLines[j]) {
+      diff.push({ type: "same", prefix: " ", text: oldLines[i] });
+      i += 1;
+      j += 1;
+    } else if (table[i + 1][j] >= table[i][j + 1]) {
+      diff.push({ type: "remove", prefix: "-", text: oldLines[i] });
+      i += 1;
+    } else {
+      diff.push({ type: "add", prefix: "+", text: newLines[j] });
+      j += 1;
+    }
+  }
+
+  while (i < oldLines.length) {
+    diff.push({ type: "remove", prefix: "-", text: oldLines[i] });
+    i += 1;
+  }
+
+  while (j < newLines.length) {
+    diff.push({ type: "add", prefix: "+", text: newLines[j] });
+    j += 1;
+  }
+
+  return collapseUnchanged(diff);
+}
+
+function collapseUnchanged(diff: DiffLine[]): DiffLine[] {
+  const result: DiffLine[] = [];
+  let unchangedBuffer: DiffLine[] = [];
+
+  const flush = () => {
+    if (unchangedBuffer.length <= 8) {
+      result.push(...unchangedBuffer);
+    } else {
+      result.push(...unchangedBuffer.slice(0, 3));
+      result.push({ type: "same", prefix: " ", text: `[${unchangedBuffer.length - 6} unchanged lines]` });
+      result.push(...unchangedBuffer.slice(-3));
+    }
+    unchangedBuffer = [];
+  };
+
+  for (const line of diff) {
+    if (line.type === "same") {
+      unchangedBuffer.push(line);
+    } else {
+      flush();
+      result.push(line);
+    }
+  }
+  flush();
+
+  return result;
 }
