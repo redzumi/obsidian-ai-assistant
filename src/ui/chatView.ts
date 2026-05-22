@@ -1,5 +1,5 @@
 import { ItemView, MarkdownRenderer, Notice, setIcon, WorkspaceLeaf } from "obsidian";
-import { SearchResult } from "../core/types";
+import { AgentToolExecutor, SearchResult } from "../core/types";
 import { DeepSeekClient } from "../services/deepseekClient";
 import { HybridSearchEngine } from "../search/hybridSearch";
 
@@ -14,6 +14,7 @@ interface ChatMessage {
 export class ChatView extends ItemView {
   private messages: ChatMessage[] = [];
   private includeContext: boolean;
+  private agentMode: boolean;
   private lastSources: SearchResult[] = [];
   private isSending = false;
 
@@ -21,11 +22,14 @@ export class ChatView extends ItemView {
     leaf: WorkspaceLeaf,
     private readonly searchEngine: HybridSearchEngine,
     private readonly deepSeekClient: DeepSeekClient,
+    private readonly agentTools: AgentToolExecutor,
     private readonly getTopK: () => number,
     includeContextByDefault: boolean,
+    agentModeByDefault: boolean,
   ) {
     super(leaf);
     this.includeContext = includeContextByDefault;
+    this.agentMode = agentModeByDefault;
   }
 
   getViewType(): string {
@@ -55,6 +59,14 @@ export class ChatView extends ItemView {
     contextLabel.appendText(" Use note context");
     this.registerDomEvent(contextToggle, "change", () => {
       this.includeContext = contextToggle.checked;
+    });
+
+    const agentLabel = toolbar.createEl("label");
+    const agentToggle = agentLabel.createEl("input", { type: "checkbox" });
+    agentToggle.checked = this.agentMode;
+    agentLabel.appendText(" Agent");
+    this.registerDomEvent(agentToggle, "change", () => {
+      this.agentMode = agentToggle.checked;
     });
 
     const clearButton = toolbar.createEl("button", { attr: { "aria-label": "Clear chat" } });
@@ -157,8 +169,15 @@ export class ChatView extends ItemView {
     this.render();
 
     try {
-      this.lastSources = this.includeContext ? this.searchEngine.search(content, this.getTopK()) : [];
-      const answer = await this.deepSeekClient.complete(content, history, this.lastSources);
+      let answer: string;
+      if (this.agentMode) {
+        const result = await this.deepSeekClient.completeWithAgent(content, history, this.agentTools);
+        this.lastSources = result.sources;
+        answer = result.answer;
+      } else {
+        this.lastSources = this.includeContext ? this.searchEngine.search(content, this.getTopK()) : [];
+        answer = await this.deepSeekClient.complete(content, history, this.lastSources);
+      }
       this.messages.push({ role: "assistant", content: answer });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

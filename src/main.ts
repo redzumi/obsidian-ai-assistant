@@ -1,4 +1,5 @@
 import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
+import { ObsidianAgentTools } from "./agent/obsidianTools";
 import { SemanticChunker } from "./core/chunker";
 import { IndexStore } from "./core/indexStore";
 import { DEFAULT_SETTINGS, DeepSeekRagSettings, IndexCoverage, PersistedIndex } from "./core/types";
@@ -20,6 +21,12 @@ export default class DeepSeekRAGPlugin extends Plugin {
   private chunker = new SemanticChunker(DEFAULT_SETTINGS.chunkSize, DEFAULT_SETTINGS.overlapSize);
   private readonly indexStore = new IndexStore();
   private readonly searchEngine = new HybridSearchEngine();
+  private readonly agentTools = new ObsidianAgentTools(
+    this.app,
+    this.indexStore,
+    this.searchEngine,
+    () => this.settings.topK,
+  );
   private readonly deepSeekClient = new DeepSeekClient(
     () => this.settings,
     () => this.indexStore.getVaultOverview(),
@@ -38,8 +45,10 @@ export default class DeepSeekRAGPlugin extends Plugin {
           leaf,
           this.searchEngine,
           this.deepSeekClient,
+          this.agentTools,
           () => this.settings.topK,
           this.settings.includeContextByDefault,
+          this.settings.agentModeByDefault,
         ),
     );
 

@@ -1,4 +1,4 @@
-import { DeepSeekRagSettings, SearchResult } from "../core/types";
+import { AgentCompletion, AgentToolExecutor, DeepSeekRagSettings, SearchResult } from "../core/types";
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -17,6 +17,66 @@ export class DeepSeekClient {
       throw new Error("DeepSeek API key is not configured.");
     }
 
+    const content = await this.requestCompletion([
+      { role: "system", content: this.buildSystemPrompt(context) },
+      ...history.slice(-12),
+      { role: "user", content: userMessage },
+    ], 1800);
+
+    return content.trim();
+  }
+
+  async completeWithAgent(userMessage: string, history: ChatMessage[], tools: AgentToolExecutor): Promise<AgentCompletion> {
+    const messages: ChatMessage[] = [
+      { role: "system", content: this.buildAgentSystemPrompt() },
+      ...history.slice(-8),
+      { role: "user", content: userMessage },
+    ];
+    const sources = new Map<string, SearchResult>();
+
+    for (let step = 0; step < 5; step += 1) {
+      const content = await this.requestCompletion(messages, 1200);
+      const action = parseAgentAction(content);
+
+      if (action.final) {
+        return { answer: action.final.trim(), sources: Array.from(sources.values()) };
+      }
+
+      if (!action.tool) {
+        return { answer: content.trim(), sources: Array.from(sources.values()) };
+      }
+
+      messages.push({ role: "assistant", content });
+      const result = await tools.execute(action.tool, action.args ?? {});
+      for (const source of result.sources ?? []) {
+        sources.set(source.chunk.id, source);
+      }
+      messages.push({
+        role: "user",
+        content: [
+          `Tool result for ${action.tool}:`,
+          result.content,
+          "",
+          "Continue. Use another tool if needed, or return final JSON.",
+        ].join("\n"),
+      });
+    }
+
+    messages.push({
+      role: "user",
+      content: "Stop using tools and provide the best final answer now as JSON: {\"final\":\"...\"}.",
+    });
+    const finalContent = await this.requestCompletion(messages, 1800);
+    const finalAction = parseAgentAction(finalContent);
+    return { answer: (finalAction.final ?? finalContent).trim(), sources: Array.from(sources.values()) };
+  }
+
+  private async requestCompletion(messages: ChatMessage[], maxTokens: number): Promise<string> {
+    const settings = this.getSettings();
+    if (!settings.apiKey.trim()) {
+      throw new Error("DeepSeek API key is not configured.");
+    }
+
     const response = await fetch(`${settings.apiBaseUrl.replace(/\/$/, "")}/v1/chat/completions`, {
       method: "POST",
       headers: {
@@ -25,13 +85,9 @@ export class DeepSeekClient {
       },
       body: JSON.stringify({
         model: settings.model,
-        messages: [
-          { role: "system", content: this.buildSystemPrompt(context) },
-          ...history.slice(-12),
-          { role: "user", content: userMessage },
-        ],
+        messages,
         temperature: 0.2,
-        max_tokens: 1800,
+        max_tokens: maxTokens,
         stream: false,
       }),
     });
@@ -48,6 +104,31 @@ export class DeepSeekClient {
     }
 
     return content.trim();
+  }
+
+  private buildAgentSystemPrompt(): string {
+    return [
+      "You are a read-only AI agent inside Obsidian.",
+      "You can inspect the user's vault with tools before answering.",
+      "Never claim you edited files; this mode is read-only.",
+      "Use tools when the answer needs more context than the current conversation.",
+      "Cite file paths when using vault content.",
+      "If the vault does not contain enough information, say so clearly.",
+      "",
+      "Available tools:",
+      "- searchNotes: args {\"query\":\"...\",\"topK\":6}. Search indexed chunks.",
+      "- openNote: args {\"path\":\"...\",\"maxChars\":6000}. Read a specific text note/file.",
+      "- listFolder: args {\"path\":\"...\"}. List files in a folder. Use empty path for vault root.",
+      "- getLinks: args {\"path\":\"...\"}. Show outgoing links and backlinks for a file.",
+      "- getVaultOverview: args {}. Show the current vault index overview.",
+      "",
+      "Respond with exactly one JSON object and no markdown.",
+      "To call a tool: {\"tool\":\"searchNotes\",\"args\":{\"query\":\"project plan\",\"topK\":6},\"reason\":\"...\"}",
+      "To answer finally: {\"final\":\"Your answer with cited file paths.\"}",
+      "",
+      "VAULT INDEX OVERVIEW:",
+      this.getVaultOverview(),
+    ].join("\n");
   }
 
   private buildSystemPrompt(context: SearchResult[]): string {
@@ -84,4 +165,43 @@ export class DeepSeekClient {
       sources,
     ].join("\n");
   }
+}
+
+interface AgentAction {
+  tool?: string;
+  args?: Record<string, unknown>;
+  final?: string;
+}
+
+function parseAgentAction(content: string): AgentAction {
+  const jsonText = extractJsonObject(content);
+  if (!jsonText) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(jsonText) as AgentAction;
+    return {
+      tool: typeof parsed.tool === "string" ? parsed.tool : undefined,
+      args: isRecord(parsed.args) ? parsed.args : undefined,
+      final: typeof parsed.final === "string" ? parsed.final : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function extractJsonObject(content: string): string | null {
+  const fenced = /```(?:json)?\s*(\{[\s\S]*?\})\s*```/i.exec(content);
+  if (fenced) {
+    return fenced[1];
+  }
+
+  const start = content.indexOf("{");
+  const end = content.lastIndexOf("}");
+  return start >= 0 && end > start ? content.slice(start, end + 1) : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

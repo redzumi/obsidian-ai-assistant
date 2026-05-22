@@ -7,6 +7,7 @@ export interface DeepSeekRagSettings {
   topK: number;
   realtimeIndexing: boolean;
   includeContextByDefault: boolean;
+  agentModeByDefault: boolean;
 }
 
 export type IndexedFileStatus = "indexed" | "metadata-only" | "error";
@@ -45,6 +46,20 @@ export interface SearchResult {
   score: number;
 }
 
+export interface AgentToolExecution {
+  content: string;
+  sources?: SearchResult[];
+}
+
+export interface AgentToolExecutor {
+  execute(toolName: string, args: Record<string, unknown>): Promise<AgentToolExecution>;
+}
+
+export interface AgentCompletion {
+  answer: string;
+  sources: SearchResult[];
+}
+
 export interface IndexCoverage {
   totalFiles: number;
   indexedFiles: number;
@@ -69,4 +84,5 @@ export const DEFAULT_SETTINGS: DeepSeekRagSettings = {
   topK: 6,
   realtimeIndexing: true,
   includeContextByDefault: true,
+  agentModeByDefault: false,
 };
