@@ -1,7 +1,7 @@
 import { ItemView, MarkdownRenderer, Notice, setIcon, WorkspaceLeaf } from "obsidian";
 import { AgentToolExecutor, PendingEdit, SearchResult } from "../core/types";
 import { DeepSeekClient } from "../services/deepseekClient";
-import { HybridSearchEngine } from "../search/hybridSearch";
+import { GraphSearchEngine } from "../search/graphSearch";
 
 export const CHAT_VIEW_TYPE = "deepseek-rag-chat-view";
 
@@ -21,7 +21,7 @@ export class ChatView extends ItemView {
 
   constructor(
     leaf: WorkspaceLeaf,
-    private readonly searchEngine: HybridSearchEngine,
+    private readonly searchEngine: GraphSearchEngine,
     private readonly deepSeekClient: DeepSeekClient,
     private readonly agentTools: AgentToolExecutor,
     private readonly getTopK: () => number,

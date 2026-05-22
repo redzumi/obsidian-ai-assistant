@@ -1,7 +1,7 @@
 import { App, TFile, TFolder } from "obsidian";
 import { AgentToolExecution, PendingEdit } from "../core/types";
 import { IndexStore } from "../core/indexStore";
-import { HybridSearchEngine } from "../search/hybridSearch";
+import { GraphSearchEngine } from "../search/graphSearch";
 
 const READABLE_EXTENSIONS = new Set(["md", "txt", "csv", "json", "canvas"]);
 
@@ -9,7 +9,7 @@ export class ObsidianAgentTools {
   constructor(
     private readonly app: App,
     private readonly indexStore: IndexStore,
-    private readonly searchEngine: HybridSearchEngine,
+    private readonly searchEngine: GraphSearchEngine,
     private readonly getTopK: () => number,
   ) {}
 

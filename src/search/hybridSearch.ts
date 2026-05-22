@@ -11,6 +11,10 @@ export class HybridSearchEngine {
     this.rebuildDocumentFrequency();
   }
 
+  getChunks(): IndexedChunk[] {
+    return [...this.chunks];
+  }
+
   search(query: string, topK: number): SearchResult[] {
     const queryTerms = tokenize(query);
     if (queryTerms.length === 0) {

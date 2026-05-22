@@ -5,6 +5,7 @@ import { IndexStore } from "./core/indexStore";
 import { DEFAULT_SETTINGS, DeepSeekRagSettings, IndexCoverage, PersistedIndex } from "./core/types";
 import { indexVaultFiles } from "./indexing/indexAll";
 import { RealtimeIndexer } from "./indexing/realtimeIndexer";
+import { GraphSearchEngine } from "./search/graphSearch";
 import { HybridSearchEngine } from "./search/hybridSearch";
 import { DeepSeekClient } from "./services/deepseekClient";
 import { CHAT_VIEW_TYPE, ChatView } from "./ui/chatView";
@@ -21,10 +22,11 @@ export default class DeepSeekRAGPlugin extends Plugin {
   private chunker = new SemanticChunker(DEFAULT_SETTINGS.chunkSize, DEFAULT_SETTINGS.overlapSize);
   private readonly indexStore = new IndexStore();
   private readonly searchEngine = new HybridSearchEngine();
+  private readonly graphSearchEngine = new GraphSearchEngine(this.app.vault, this.app.metadataCache, this.searchEngine);
   private readonly agentTools = new ObsidianAgentTools(
     this.app,
     this.indexStore,
-    this.searchEngine,
+    this.graphSearchEngine,
     () => this.settings.topK,
   );
   private readonly deepSeekClient = new DeepSeekClient(
@@ -43,7 +45,7 @@ export default class DeepSeekRAGPlugin extends Plugin {
       (leaf: WorkspaceLeaf) =>
         new ChatView(
           leaf,
-          this.searchEngine,
+          this.graphSearchEngine,
           this.deepSeekClient,
           this.agentTools,
           () => this.settings.topK,
