@@ -1,0 +1,17 @@
+{
+  "git": {
+    "tagName": "v${version}",
+    "commitMessage": "chore(release): v${version}"
+  },
+  "github": {
+    "release": true,
+    "releaseName": "v${version}",
+    "web": true
+  },
+  "npm": {
+    "publish": false
+  },
+  "hooks": {
+    "after:bump": "node scripts/update-versions.mjs"
+  }
+}

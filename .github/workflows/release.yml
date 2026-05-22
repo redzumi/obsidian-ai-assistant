@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "*"
+      - "v*"
 
 permissions:
   contents: write
@@ -27,8 +27,7 @@ jobs:
       - name: Package
         run: cd dist && zip ../obsidian-ai-assistant-${{ github.ref_name }}.zip main.js manifest.json styles.css
 
-      - name: Create release
+      - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
           files: obsidian-ai-assistant-${{ github.ref_name }}.zip
