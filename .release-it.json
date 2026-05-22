@@ -1,17 +1,24 @@
 {
   "git": {
-    "tagName": "v${version}",
-    "commitMessage": "chore(release): v${version}"
+    "tagName": "${version}",
+    "commitMessage": "chore(release): ${version}"
   },
   "github": {
     "release": true,
-    "releaseName": "v${version}",
-    "web": true
+    "releaseName": "${version}",
+    "assets": [
+      "dist/main.js",
+      "dist/manifest.json",
+      "dist/styles.css"
+    ]
   },
   "npm": {
     "publish": false
   },
   "hooks": {
-    "after:bump": "node scripts/update-versions.mjs"
+    "after:bump": [
+      "node scripts/update-versions.mjs",
+      "yarn build"
+    ]
   }
 }
