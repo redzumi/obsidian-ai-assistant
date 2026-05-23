@@ -1,3 +1,5 @@
+export type ChatIntent = "ask" | "edit";
+
 export interface ObsidianAIAssistantSettings {
   apiKey: string;
   model: string;
@@ -6,8 +8,7 @@ export interface ObsidianAIAssistantSettings {
   overlapSize: number;
   topK: number;
   realtimeIndexing: boolean;
-  includeContextByDefault: boolean;
-  agentModeByDefault: boolean;
+  defaultIntent: ChatIntent;
 }
 
 export type IndexedFileStatus = "indexed" | "metadata-only" | "error";
@@ -109,6 +110,5 @@ export const DEFAULT_SETTINGS: ObsidianAIAssistantSettings = {
   overlapSize: 120,
   topK: 6,
   realtimeIndexing: true,
-  includeContextByDefault: true,
-  agentModeByDefault: false,
+  defaultIntent: "ask",
 };

@@ -2,7 +2,7 @@ import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import { ObsidianAgentTools } from "./agent/obsidianTools";
 import { SemanticChunker } from "./core/chunker";
 import { IndexStore } from "./core/indexStore";
-import { DEFAULT_SETTINGS, ObsidianAIAssistantSettings, IndexCoverage, PersistedIndex } from "./core/types";
+import { ChatIntent, DEFAULT_SETTINGS, ObsidianAIAssistantSettings, IndexCoverage, PersistedIndex } from "./core/types";
 import { indexVaultFiles } from "./indexing/indexAll";
 import { RealtimeIndexer } from "./indexing/realtimeIndexer";
 import { GraphSearchEngine } from "./search/graphSearch";
@@ -12,7 +12,10 @@ import { CHAT_VIEW_TYPE, ChatView } from "./ui/chatView";
 import { ObsidianAIAssistantSettingTab } from "./ui/settingsTab";
 
 interface PluginData {
-  settings?: Partial<ObsidianAIAssistantSettings>;
+  settings?: Partial<ObsidianAIAssistantSettings> & {
+    includeContextByDefault?: boolean;
+    agentModeByDefault?: boolean;
+  };
   index?: PersistedIndex;
 }
 
@@ -45,12 +48,9 @@ export default class ObsidianAIAssistantPlugin extends Plugin {
       (leaf: WorkspaceLeaf) =>
         new ChatView(
           leaf,
-          this.graphSearchEngine,
           this.aiChatClient,
           this.agentTools,
-          () => this.settings.topK,
-          this.settings.includeContextByDefault,
-          this.settings.agentModeByDefault,
+          this.settings.defaultIntent,
         ),
     );
 
@@ -124,7 +124,7 @@ export default class ObsidianAIAssistantPlugin extends Plugin {
 
   async loadPluginData(): Promise<void> {
     const data = (await this.loadData()) as PluginData | null;
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, data?.settings ?? {});
+    this.settings = migrateSettings(data?.settings);
     this.indexStore.load(data?.index);
   }
 
@@ -205,7 +205,11 @@ export default class ObsidianAIAssistantPlugin extends Plugin {
       return;
     }
 
-    view.startAgentTask(this.buildCurrentNotePrompt(task, file.path));
+    view.startTask(this.buildCurrentNotePrompt(task, file.path), this.getCurrentNoteTaskIntent(task));
+  }
+
+  private getCurrentNoteTaskIntent(task: "summarize" | "review" | "tasks" | "improve"): ChatIntent {
+    return task === "improve" ? "edit" : "ask";
   }
 
   private buildCurrentNotePrompt(task: "summarize" | "review" | "tasks" | "improve", path: string): string {
@@ -220,4 +224,18 @@ export default class ObsidianAIAssistantPlugin extends Plugin {
         return `Propose improvements to current note: ${path}\n\nUse openNote on "${path}" first. Treat it as the current note. Propose concrete improvements to this note. If small text edits are useful, use proposePatch or proposePatchBatch so I can review them before applying.`;
     }
   }
+}
+
+function migrateSettings(settings: PluginData["settings"]): ObsidianAIAssistantSettings {
+  const { includeContextByDefault: _includeContextByDefault, agentModeByDefault, defaultIntent: storedDefaultIntent, ...currentSettings } = settings ?? {};
+  const defaultIntent = isChatIntent(storedDefaultIntent) ? storedDefaultIntent : agentModeByDefault ? "edit" : "ask";
+  return {
+    ...DEFAULT_SETTINGS,
+    ...currentSettings,
+    defaultIntent,
+  };
+}
+
+function isChatIntent(value: unknown): value is ChatIntent {
+  return value === "ask" || value === "edit";
 }

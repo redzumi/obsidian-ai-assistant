@@ -1,4 +1,4 @@
-import { AgentCompletion, AgentToolExecutor, ObsidianAIAssistantSettings, PendingEdit, SearchResult, WorkingSetItem } from "../core/types";
+import { AgentCompletion, AgentToolExecutor, ChatIntent, ObsidianAIAssistantSettings, PendingEdit, SearchResult, WorkingSetItem } from "../core/types";
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -11,24 +11,9 @@ export class AIChatClient {
     private readonly getVaultOverview: () => string,
   ) {}
 
-  async complete(userMessage: string, history: ChatMessage[], context: SearchResult[]): Promise<string> {
-    const settings = this.getSettings();
-    if (this.requiresApiKey(settings) && !settings.apiKey.trim()) {
-      throw new Error("AI provider API key is not configured.");
-    }
-
-    const content = await this.requestCompletion([
-      { role: "system", content: this.buildSystemPrompt(context) },
-      ...history.slice(-12),
-      { role: "user", content: userMessage },
-    ], 1800);
-
-    return content.trim();
-  }
-
-  async completeWithAgent(userMessage: string, history: ChatMessage[], tools: AgentToolExecutor): Promise<AgentCompletion> {
+  async completeWithAgent(userMessage: string, history: ChatMessage[], tools: AgentToolExecutor, intent: ChatIntent): Promise<AgentCompletion> {
     const messages: ChatMessage[] = [
-      { role: "system", content: this.buildAgentSystemPrompt() },
+      { role: "system", content: this.buildAgentSystemPrompt(intent) },
       ...history.slice(-8),
       { role: "user", content: userMessage },
     ];
@@ -49,6 +34,17 @@ export class AIChatClient {
       }
 
       messages.push({ role: "assistant", content });
+      if (!isToolAllowed(action.tool, intent)) {
+        messages.push({
+          role: "user",
+          content: [
+            `Tool ${action.tool} is not available in ${intent === "ask" ? "Ask" : "Edit"} mode.`,
+            intent === "ask" ? "Answer without preparing edits. If file changes are needed, tell the user to switch to Edit." : "Use one of the available tools.",
+          ].join("\n"),
+        });
+        continue;
+      }
+
       const result = await tools.execute(action.tool, action.args ?? {});
       for (const source of result.sources ?? []) {
         sources.set(source.chunk.id, source);
@@ -135,11 +131,33 @@ export class AIChatClient {
     }
   }
 
-  private buildAgentSystemPrompt(): string {
+  private buildAgentSystemPrompt(intent: ChatIntent): string {
+    const editTools =
+      intent === "edit"
+        ? [
+            "- proposePatch: args {\"path\":\"...\",\"summary\":\"...\",\"find\":\"exact existing text\",\"replace\":\"replacement text\"}. Prepare a small pending patch for user review.",
+            "- proposePatchBatch: args {\"summary\":\"...\",\"patches\":[{\"path\":\"...\",\"summary\":\"...\",\"find\":\"exact existing text\",\"replace\":\"replacement text\"}]}. Prepare multiple pending patches for user review.",
+            "- proposeEdit: args {\"path\":\"...\",\"summary\":\"...\",\"newContent\":\"full replacement file content\"}. Prepare a pending edit for user review.",
+          ]
+        : [];
+    const editPolicy =
+      intent === "edit"
+        ? [
+            "You may propose file edits only with proposePatch, proposePatchBatch, or proposeEdit.",
+            "Prefer proposePatch for one normal edit and proposePatchBatch for multiple normal edits. Use proposeEdit only when the user asks to rewrite a full file or the patch would be larger than the original file.",
+            "Before proposePatch, proposePatchBatch, or proposeEdit, open each target file unless the exact current content is already available in the conversation.",
+            "For proposePatch and proposePatchBatch, every find must be an exact substring from the current file and specific enough to match once.",
+            "For proposeEdit, newContent must be the complete replacement content for the file, not a partial patch.",
+          ]
+        : [
+            "You are in Ask mode. Do not propose pending edits and do not call edit tools.",
+            "If the user asks for file changes, explain what you would change and ask them to switch to Edit mode.",
+          ];
+
     return [
       "You are an AI agent inside Obsidian.",
-      "You can inspect the user's vault and propose file edits with tools before answering.",
-      "You cannot directly apply edits. All edits are pending until the user reviews and applies them.",
+      intent === "edit" ? "You can inspect the user's vault and propose file edits with tools before answering." : "You can inspect the user's vault with read-only tools before answering.",
+      intent === "edit" ? "You cannot directly apply edits. All edits are pending until the user reviews and applies them." : "You cannot prepare or apply edits in Ask mode.",
       "Use tools when the answer needs more context than the current conversation.",
       "Cite file paths when using vault content.",
       "If the vault does not contain enough information, say so clearly.",
@@ -152,14 +170,9 @@ export class AIChatClient {
       "- listFolder: args {\"path\":\"...\"}. List files in a folder. Use empty path for vault root.",
       "- getLinks: args {\"path\":\"...\"}. Show outgoing links and backlinks for a file.",
       "- getVaultOverview: args {}. Show the current vault index overview.",
-      "- proposePatch: args {\"path\":\"...\",\"summary\":\"...\",\"find\":\"exact existing text\",\"replace\":\"replacement text\"}. Prepare a small pending patch for user review.",
-      "- proposePatchBatch: args {\"summary\":\"...\",\"patches\":[{\"path\":\"...\",\"summary\":\"...\",\"find\":\"exact existing text\",\"replace\":\"replacement text\"}]}. Prepare multiple pending patches for user review.",
-      "- proposeEdit: args {\"path\":\"...\",\"summary\":\"...\",\"newContent\":\"full replacement file content\"}. Prepare a pending edit for user review.",
+      ...editTools,
       "",
-      "Prefer proposePatch for one normal edit and proposePatchBatch for multiple normal edits. Use proposeEdit only when the user asks to rewrite a full file or the patch would be larger than the original file.",
-      "Before proposePatch, proposePatchBatch, or proposeEdit, open each target file unless the exact current content is already available in the conversation.",
-      "For proposePatch and proposePatchBatch, every find must be an exact substring from the current file and specific enough to match once.",
-      "For proposeEdit, newContent must be the complete replacement content for the file, not a partial patch.",
+      ...editPolicy,
       "",
       "Respond with exactly one JSON object and no markdown.",
       "To call a tool: {\"tool\":\"searchNotes\",\"args\":{\"query\":\"project plan\",\"topK\":6},\"reason\":\"...\"}",
@@ -170,40 +183,16 @@ export class AIChatClient {
     ].join("\n");
   }
 
-  private buildSystemPrompt(context: SearchResult[]): string {
-    if (context.length === 0) {
-      return [
-        "You are a helpful assistant inside Obsidian.",
-        "Use the vault index overview to understand what the user's storage contains.",
-        "Answer plainly and say when the indexed notes do not provide enough context.",
-        "",
-        "VAULT INDEX OVERVIEW:",
-        this.getVaultOverview(),
-      ].join("\n");
-    }
+}
 
-    const sources = context
-      .map((result, index) => {
-        const chunk = result.chunk;
-        const heading = chunk.headings.length ? `\nSection: ${chunk.headings.join(" > ")}` : "";
-        return `[${index + 1}] ${chunk.filePath}${heading}\n${chunk.content}`;
-      })
-      .join("\n\n---\n\n");
+const READ_ONLY_TOOLS = new Set(["searchNotes", "getCurrentNote", "openCurrentNote", "openNote", "listFolder", "getLinks", "getVaultOverview"]);
+const EDIT_TOOLS = new Set(["proposePatch", "proposePatchBatch", "proposeEdit"]);
 
-    return [
-      "You are a helpful assistant inside Obsidian.",
-      "Use the vault index overview to understand the shape of the user's storage.",
-      "Use the note context below when it is relevant.",
-      "Cite file paths when using note content.",
-      "If the answer is not supported by the notes, say so clearly.",
-      "",
-      "VAULT INDEX OVERVIEW:",
-      this.getVaultOverview(),
-      "",
-      "NOTE CONTEXT:",
-      sources,
-    ].join("\n");
+function isToolAllowed(toolName: string, intent: ChatIntent): boolean {
+  if (READ_ONLY_TOOLS.has(toolName)) {
+    return true;
   }
+  return intent === "edit" && EDIT_TOOLS.has(toolName);
 }
 
 interface AgentAction {

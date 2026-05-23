@@ -124,23 +124,17 @@ export class ObsidianAIAssistantSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Include context by default")
-      .setDesc("New chat panes will search notes before sending a message.")
-      .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.includeContextByDefault).onChange(async (value) => {
-          this.plugin.settings.includeContextByDefault = value;
-          await this.plugin.savePluginData();
-        }),
-      );
-
-    new Setting(containerEl)
-      .setName("Agent mode by default")
-      .setDesc("New chat panes can inspect the vault and prepare edits for review before answering.")
-      .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.agentModeByDefault).onChange(async (value) => {
-          this.plugin.settings.agentModeByDefault = value;
-          await this.plugin.savePluginData();
-        }),
+      .setName("Default chat intent")
+      .setDesc("Choose whether new chat panes start in read-only Ask or reviewed Edit.")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("ask", "Ask")
+          .addOption("edit", "Edit")
+          .setValue(this.plugin.settings.defaultIntent)
+          .onChange(async (value) => {
+            this.plugin.settings.defaultIntent = value === "edit" ? "edit" : "ask";
+            await this.plugin.savePluginData();
+          }),
       );
 
     new Setting(containerEl)

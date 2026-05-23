@@ -1,7 +1,6 @@
 import { ItemView, MarkdownRenderer, Notice, setIcon, WorkspaceLeaf } from "obsidian";
-import { AgentToolExecutor, PendingEdit, SearchResult, WorkingSetItem } from "../core/types";
+import { AgentToolExecutor, ChatIntent, PendingEdit, SearchResult, WorkingSetItem } from "../core/types";
 import { AIChatClient } from "../services/aiChatClient";
-import { GraphSearchEngine } from "../search/graphSearch";
 
 export const CHAT_VIEW_TYPE = "vault-ai-assistant-chat-view";
 
@@ -11,12 +10,11 @@ interface ChatMessage {
   error?: boolean;
 }
 
-type ChatMode = "chat" | "rag" | "agent";
 type PanelId = "edits" | "workingSet" | "sources";
 
 export class ChatView extends ItemView {
   private messages: ChatMessage[] = [];
-  private mode: ChatMode;
+  private intent: ChatIntent;
   private lastSources: SearchResult[] = [];
   private pendingEdits: PendingEdit[] = [];
   private workingSet: WorkingSetItem[] = [];
@@ -30,15 +28,12 @@ export class ChatView extends ItemView {
 
   constructor(
     leaf: WorkspaceLeaf,
-    private readonly searchEngine: GraphSearchEngine,
     private readonly aiChatClient: AIChatClient,
     private readonly agentTools: AgentToolExecutor,
-    private readonly getTopK: () => number,
-    includeContextByDefault: boolean,
-    agentModeByDefault: boolean,
+    defaultIntent: ChatIntent,
   ) {
     super(leaf);
-    this.mode = agentModeByDefault ? "agent" : includeContextByDefault ? "rag" : "chat";
+    this.intent = defaultIntent;
   }
 
   getViewType(): string {
@@ -58,13 +53,13 @@ export class ChatView extends ItemView {
     this.render();
   }
 
-  startAgentTask(content: string): void {
+  startTask(content: string, intent: ChatIntent): void {
     if (this.isSending) {
       new Notice("Vault AI Assistant is already working.", 3000);
       return;
     }
 
-    this.mode = "agent";
+    this.intent = intent;
     void this.sendMessage(content);
   }
 
@@ -72,7 +67,7 @@ export class ChatView extends ItemView {
     this.containerEl.empty();
 
     const toolbar = this.containerEl.createDiv({ cls: "vault-ai-assistant-toolbar" });
-    this.renderModeControl(toolbar);
+    this.renderIntentControl(toolbar);
 
     const clearButton = toolbar.createEl("button", { attr: { "aria-label": "Clear chat" } });
     setIcon(clearButton, "trash-2");
@@ -116,36 +111,32 @@ export class ChatView extends ItemView {
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
-  private renderModeControl(toolbar: HTMLElement): void {
-    const modeControl = toolbar.createDiv({ cls: "vault-ai-assistant-mode-control", attr: { "aria-label": "Chat mode" } });
-    const modes: Array<{ mode: ChatMode; label: string; description: string }> = [
-      { mode: "chat", label: "Chat", description: "No note context" },
-      { mode: "rag", label: "Context", description: "Search note context before answering" },
-      { mode: "agent", label: "Agent", description: "Inspect vault and propose edits" },
+  private renderIntentControl(toolbar: HTMLElement): void {
+    const intentControl = toolbar.createDiv({ cls: "vault-ai-assistant-intent-control", attr: { "aria-label": "Chat intent" } });
+    const intents: Array<{ intent: ChatIntent; label: string; description: string }> = [
+      { intent: "ask", label: "Ask", description: "Inspect the vault with read-only tools" },
+      { intent: "edit", label: "Edit", description: "Prepare reviewed changes for approval" },
     ];
 
-    for (const item of modes) {
-      const button = modeControl.createEl("button", {
-        cls: `vault-ai-assistant-mode-button ${this.mode === item.mode ? "is-active" : ""}`,
+    for (const item of intents) {
+      const button = intentControl.createEl("button", {
+        cls: `vault-ai-assistant-intent-button ${this.intent === item.intent ? "is-active" : ""}`,
         text: item.label,
         attr: { "aria-label": item.description },
       });
       button.disabled = this.isSending;
       this.registerDomEvent(button, "click", () => {
-        this.mode = item.mode;
+        this.intent = item.intent;
         this.render();
       });
     }
   }
 
   private getEmptyStateText(): string {
-    if (this.mode === "agent") {
-      return "Ask the agent to inspect notes, review files, or prepare edits.";
+    if (this.intent === "edit") {
+      return "Ask for reviewed changes. Edits stay pending until you apply them.";
     }
-    if (this.mode === "rag") {
-      return "Ask a question using indexed note context.";
-    }
-    return "Ask a plain chat question.";
+    return "Ask about your vault. The assistant can inspect notes but will not prepare edits.";
   }
 
   private async renderMessage(parent: HTMLElement, message: ChatMessage): Promise<void> {
@@ -281,7 +272,7 @@ export class ChatView extends ItemView {
     const textarea = inputRow.createEl("textarea", {
       cls: "vault-ai-assistant-input",
       attr: {
-        placeholder: this.mode === "agent" ? "Ask the agent..." : this.mode === "rag" ? "Ask with note context..." : "Message assistant...",
+        placeholder: this.intent === "edit" ? "Ask for reviewed changes..." : "Ask about your vault...",
       },
     });
     const sendButton = inputRow.createEl("button", { cls: "mod-cta", attr: { "aria-label": "Send" } });
@@ -316,34 +307,17 @@ export class ChatView extends ItemView {
     this.render();
 
     try {
-      let answer: string;
-      if (this.mode === "agent") {
-        this.statusText = "Agent is inspecting the vault...";
-        this.render();
-        const result = await this.aiChatClient.completeWithAgent(content, history, this.agentTools);
-        this.lastSources = result.sources;
-        this.pendingEdits = this.pendingEdits.concat(result.pendingEdits);
-        this.workingSet = mergeWorkingSet(
-          this.workingSet,
-          result.workingSet,
-          result.pendingEdits.map((edit) => ({ path: edit.path, role: "edited", detail: edit.summary })),
-        );
-        answer = result.answer;
-      } else {
-        this.statusText = this.mode === "rag" ? "Searching note context..." : "Waiting for model...";
-        this.render();
-        this.lastSources = this.mode === "rag" ? this.searchEngine.search(content, this.getTopK()) : [];
-        this.workingSet = mergeWorkingSet(
-          this.workingSet,
-          unique(this.lastSources.map((source) => source.chunk.filePath)).map((path) => ({
-            path,
-            role: "searched",
-            detail: `Context for: ${content}`,
-          })),
-        );
-        answer = await this.aiChatClient.complete(content, history, this.lastSources);
-      }
-      this.messages.push({ role: "assistant", content: answer });
+      this.statusText = this.intent === "edit" ? "Preparing reviewed changes..." : "Inspecting the vault...";
+      this.render();
+      const result = await this.aiChatClient.completeWithAgent(content, history, this.agentTools, this.intent);
+      this.lastSources = result.sources;
+      this.pendingEdits = this.pendingEdits.concat(result.pendingEdits);
+      this.workingSet = mergeWorkingSet(
+        this.workingSet,
+        result.workingSet,
+        result.pendingEdits.map((edit) => ({ path: edit.path, role: "edited", detail: edit.summary })),
+      );
+      this.messages.push({ role: "assistant", content: result.answer });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       new Notice(message, 6000);
@@ -402,10 +376,6 @@ function mergeWorkingSet(existing: WorkingSetItem[], ...groups: WorkingSetItem[]
     }
   }
   return Array.from(merged.values());
-}
-
-function unique(values: string[]): string[] {
-  return Array.from(new Set(values));
 }
 
 type DiffLine = { type: "same" | "add" | "remove"; prefix: string; text: string };
