@@ -1,30 +1,12 @@
 import { AgentCompletion, ChatIntent, DebugLogEntry, McpToolCallContext, McpToolDefinition, McpToolServer, ObsidianAIAssistantSettings, PendingEdit, SearchResult, WorkingSetItem } from "../core/types";
-
-interface ChatMessage {
-  role: "system" | "user" | "assistant" | "tool";
-  content: string | null;
-  tool_call_id?: string;
-  tool_calls?: ModelToolCall[];
-}
-
-interface ModelToolCall {
-  id: string;
-  type: "function";
-  function: {
-    name: string;
-    arguments: string;
-  };
-}
-
-interface ModelAssistantMessage {
-  role: "assistant";
-  content?: string | null;
-  tool_calls?: ModelToolCall[];
-}
+import { OpenAiCompatibleAdapter } from "../providers/openAiCompatibleAdapter";
+import { ChatProviderAdapter, ProviderAssistantMessage, ProviderMessage } from "../providers/types";
 
 type DebugLogger = (entry: DebugLogEntry) => void;
 
 export class AIChatClient {
+  private readonly providerAdapter: ChatProviderAdapter = new OpenAiCompatibleAdapter();
+
   constructor(
     private readonly getSettings: () => ObsidianAIAssistantSettings,
     private readonly getVaultOverview: () => string,
@@ -39,9 +21,9 @@ export class AIChatClient {
     context: McpToolCallContext = { intent, pendingEdits: [], allowedCapabilities: ["read"] },
     signal?: AbortSignal,
   ): Promise<AgentCompletion> {
-    const messages: ChatMessage[] = [
-      { role: "system", content: this.buildAgentSystemPrompt(intent, context.pendingEdits) },
-      ...history.slice(-8).map((message) => ({ role: message.role, content: message.content }) satisfies ChatMessage),
+    const messages: ProviderMessage[] = [
+      { role: "system", content: this.buildAgentSystemPrompt(intent, context) },
+      ...history.slice(-8).map((message) => ({ role: message.role, content: message.content }) satisfies ProviderMessage),
       { role: "user", content: userMessage },
     ];
     const toolDefinitions = mcpServer.listTools(context);
@@ -61,8 +43,8 @@ export class AIChatClient {
     for (let step = 0; step < 30; step += 1) {
       throwIfAborted(signal);
       const assistantMessage = await this.requestCompletion(messages, toolDefinitions, 8000, logDebug, step + 1, signal);
-      const toolCalls = assistantMessage.tool_calls ?? [];
-      const content = assistantMessage.content?.trim() ?? "";
+      const toolCalls = assistantMessage.toolCalls;
+      const content = assistantMessage.content.trim();
 
       if (toolCalls.length === 0) {
         emitDebug(logDebug, "agent-final", "Model returned final answer", {
@@ -77,23 +59,23 @@ export class AIChatClient {
 
       messages.push({
         role: "assistant",
-        content: assistantMessage.content ?? null,
-        tool_calls: toolCalls,
+        content: assistantMessage.content || null,
+        toolCalls,
       });
 
       for (const toolCall of toolCalls) {
         throwIfAborted(signal);
-        const args = parseToolArguments(toolCall.function.arguments);
-        emitDebug(logDebug, "tool-call", `Calling ${toolCall.function.name}`, {
+        const args = parseToolArguments(toolCall.argumentsJson);
+        emitDebug(logDebug, "tool-call", `Calling ${toolCall.name}`, {
           step: step + 1,
           toolCall,
           args,
         });
 
-        const result = limitToolResult(await mcpServer.callTool(toolCall.function.name, args, context));
-        emitDebug(logDebug, "tool-result", `Tool result from ${toolCall.function.name}`, {
+        const result = limitToolResult(await mcpServer.callTool(toolCall.name, args, context));
+        emitDebug(logDebug, "tool-result", `Tool result from ${toolCall.name}`, {
           step: step + 1,
-          tool: toolCall.function.name,
+          tool: toolCall.name,
           result,
         });
 
@@ -102,7 +84,7 @@ export class AIChatClient {
           mergeWorkingSetItem(workingSet, {
             path: source.chunk.filePath,
             role: "searched",
-            detail: `Used by ${toolCall.function.name}`,
+            detail: `Used by ${toolCall.name}`,
           });
         }
         if (result.pendingEdit) {
@@ -117,7 +99,7 @@ export class AIChatClient {
 
         messages.push({
           role: "tool",
-          tool_call_id: toolCall.id,
+          toolCallId: toolCall.id,
           content: JSON.stringify(summarizeToolResult(result)),
         });
       }
@@ -131,7 +113,7 @@ export class AIChatClient {
           : "Stop using tools and provide the best final answer now. If you were creating a long note and have not finished it, say it was not completed.",
     });
     const finalMessage = await this.requestCompletion(messages, toolDefinitions, 1800, logDebug, 31, signal);
-    const answer = finalMessage.content?.trim() ?? "";
+    const answer = finalMessage.content.trim();
     emitDebug(logDebug, "agent-final", "Agent stopped after step limit", {
       answer,
       sources: Array.from(sources.values()),
@@ -141,7 +123,7 @@ export class AIChatClient {
     return { answer, sources: Array.from(sources.values()), pendingEdits, workingSet: Array.from(workingSet.values()) };
   }
 
-  private async requestCompletion(messages: ChatMessage[], toolDefinitions: McpToolDefinition[], maxTokens: number, logDebug?: DebugLogger, step?: number, signal?: AbortSignal): Promise<ModelAssistantMessage> {
+  private async requestCompletion(messages: ProviderMessage[], toolDefinitions: McpToolDefinition[], maxTokens: number, logDebug?: DebugLogger, step?: number, signal?: AbortSignal): Promise<ProviderAssistantMessage> {
     const settings = this.getSettings();
     if (this.requiresApiKey(settings) && !settings.apiKey.trim()) {
       emitDebug(logDebug, "model-error", "Request blocked because the API key is not configured", {
@@ -159,29 +141,21 @@ export class AIChatClient {
       headers.Authorization = `Bearer ${settings.apiKey}`;
     }
 
-    const url = `${settings.apiBaseUrl.replace(/\/$/, "")}/v1/chat/completions`;
     const startedAt = Date.now();
-    const requestBody = {
-      model: settings.model,
-      messages,
-      tools: toolDefinitions.map(toOpenAiTool),
-      tool_choice: "auto",
-      temperature: 0.2,
-      max_tokens: maxTokens,
-      stream: false,
-    };
+    const request = this.providerAdapter.createRequest(settings, messages, toolDefinitions, maxTokens);
     emitDebug(logDebug, "model-request", `Request ${step ?? "?"} to ${settings.model}`, {
       step,
-      url,
-      body: requestBody,
+      provider: this.providerAdapter.name,
+      url: request.url,
+      body: request.body,
     });
 
     let response: Response;
     try {
-      response = await fetch(url, {
+      response = await fetch(request.url, {
         method: "POST",
         headers,
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify(request.body),
         signal,
       });
     } catch (error) {
@@ -205,8 +179,8 @@ export class AIChatClient {
     }
 
     const data = await response.json();
-    const message = data?.choices?.[0]?.message;
-    if (!isAssistantMessage(message)) {
+    const message = this.providerAdapter.parseResponse(data);
+    if (!message) {
       emitDebug(logDebug, "model-error", `Request ${step ?? "?"} returned an unexpected response`, {
         step,
         durationMs: Date.now() - startedAt,
@@ -219,7 +193,7 @@ export class AIChatClient {
       step,
       status: response.status,
       durationMs: Date.now() - startedAt,
-      message,
+      message: message.raw,
       response: data,
     });
 
@@ -235,8 +209,10 @@ export class AIChatClient {
     }
   }
 
-  private buildAgentSystemPrompt(intent: ChatIntent, pendingEdits: McpToolCallContext["pendingEdits"]): string {
+  private buildAgentSystemPrompt(intent: ChatIntent, context: McpToolCallContext): string {
     const customSystemPrompt = this.getSettings().systemPrompt.trim();
+    const pendingEdits = context.pendingEdits;
+    const pendingEditsCanBeApplied = context.allowedCapabilities.includes("apply_edit");
     const editPolicy =
       intent === "edit"
         ? [
@@ -262,6 +238,9 @@ export class AIChatClient {
       "If the vault does not contain enough information, say so clearly.",
       "Do not say you will inspect, search, open, create, patch, or edit something later. If that action is needed, call a tool in the same response.",
       "Apply existing pending edits only when the user explicitly asks to apply them.",
+      pendingEdits.length > 0 && !pendingEditsCanBeApplied
+        ? "Current pending edits cannot be applied by tools in this turn because the user has not enabled apply permission. If the user asks to apply them, tell them to use the visible Apply buttons or enable Allow apply for the next message."
+        : "",
       ...editPolicy,
       ...(pendingEdits.length > 0
         ? [
@@ -276,17 +255,6 @@ export class AIChatClient {
       this.getVaultOverview(),
     ].join("\n");
   }
-}
-
-function toOpenAiTool(tool: McpToolDefinition): Record<string, unknown> {
-  return {
-    type: "function",
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.inputSchema,
-    },
-  };
 }
 
 function parseToolArguments(rawArguments: string): Record<string, unknown> {
@@ -370,13 +338,6 @@ function summarizePendingEdit(edit: PendingEdit): Pick<PendingEdit, "id" | "path
     kind: edit.kind,
     summary: edit.summary,
   };
-}
-
-function isAssistantMessage(value: unknown): value is ModelAssistantMessage {
-  if (!isRecord(value) || value.role !== "assistant") {
-    return false;
-  }
-  return typeof value.content === "string" || value.content === null || typeof value.content === "undefined";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

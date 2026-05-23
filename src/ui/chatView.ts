@@ -22,6 +22,7 @@ export class ChatView extends ItemView {
   private debugLogs: DebugLogEntry[] = [];
   private isSending = false;
   private abortController: AbortController | null = null;
+  private allowApplyToolsForNextMessage = false;
   private statusText = "";
   private readonly expandedPanels: Record<PanelId, boolean> = {
     edits: true,
@@ -352,6 +353,16 @@ export class ChatView extends ItemView {
     const stopButton = inputRow.createEl("button", { attr: { "aria-label": "Stop" } });
     setIcon(stopButton, "square");
     stopButton.disabled = !this.isSending;
+    if (this.pendingEdits.length > 0) {
+      const applyPermissionLabel = inputRow.createEl("label", { cls: "vault-chat-agent-apply-permission" });
+      const applyPermissionInput = applyPermissionLabel.createEl("input", { type: "checkbox" });
+      applyPermissionInput.checked = this.allowApplyToolsForNextMessage;
+      applyPermissionInput.disabled = this.isSending;
+      applyPermissionLabel.createSpan({ text: "Allow apply" });
+      this.registerDomEvent(applyPermissionInput, "change", () => {
+        this.allowApplyToolsForNextMessage = applyPermissionInput.checked;
+      });
+    }
 
     const send = () => {
       const value = textarea.value.trim();
@@ -382,6 +393,8 @@ export class ChatView extends ItemView {
     this.messages.push({ role: "user", content });
     this.isSending = true;
     this.abortController = new AbortController();
+    const allowApplyTools = this.allowApplyToolsForNextMessage;
+    this.allowApplyToolsForNextMessage = false;
     this.render();
 
     try {
@@ -401,7 +414,11 @@ export class ChatView extends ItemView {
         {
           intent: this.intent,
           pendingEdits: this.pendingEdits.map(summarizePendingEdit),
-          allowedCapabilities: this.intent === "edit" ? ["read", "propose_edit", "apply_edit"] : ["read", "apply_edit"],
+          allowedCapabilities: [
+            "read",
+            ...(this.intent === "edit" ? (["propose_edit"] as const) : []),
+            ...(allowApplyTools ? (["apply_edit"] as const) : []),
+          ],
         },
         this.abortController.signal,
       );

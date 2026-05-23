@@ -104,6 +104,15 @@
   resize: vertical;
 }
 
+.vault-chat-agent-apply-permission {
+  align-items: center;
+  color: var(--text-muted);
+  display: flex;
+  font-size: var(--font-ui-small);
+  gap: 6px;
+  white-space: nowrap;
+}
+
 .vault-chat-agent-system-prompt-input {
   min-height: 96px;
   min-width: min(420px, 100%);
