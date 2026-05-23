@@ -1,9 +1,11 @@
-import { AgentCompletion, AgentToolExecutor, ChatIntent, ObsidianAIAssistantSettings, PendingEdit, SearchResult, WorkingSetItem } from "../core/types";
+import { AgentCompletion, AgentToolExecutor, ChatIntent, DebugLogEntry, ObsidianAIAssistantSettings, PendingEdit, SearchResult, WorkingSetItem } from "../core/types";
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
 }
+
+type DebugLogger = (entry: DebugLogEntry) => void;
 
 export class AIChatClient {
   constructor(
@@ -11,7 +13,7 @@ export class AIChatClient {
     private readonly getVaultOverview: () => string,
   ) {}
 
-  async completeWithAgent(userMessage: string, history: ChatMessage[], tools: AgentToolExecutor, intent: ChatIntent): Promise<AgentCompletion> {
+  async completeWithAgent(userMessage: string, history: ChatMessage[], tools: AgentToolExecutor, intent: ChatIntent, logDebug?: DebugLogger): Promise<AgentCompletion> {
     const messages: ChatMessage[] = [
       { role: "system", content: this.buildAgentSystemPrompt(intent) },
       ...history.slice(-8),
@@ -22,11 +24,25 @@ export class AIChatClient {
     const workingSet = new Map<string, WorkingSetItem>();
     let invalidActionCount = 0;
 
+    emitDebug(logDebug, "agent-start", `Started ${intent} request`, {
+      intent,
+      userMessage,
+      historyLength: history.length,
+      messages,
+    });
+
     for (let step = 0; step < 30; step += 1) {
-      const content = await this.requestCompletion(messages, 8000);
+      const content = await this.requestCompletion(messages, 8000, logDebug, step + 1);
       const action = parseAgentAction(content);
 
       if (action.final) {
+        emitDebug(logDebug, "agent-final", "Model returned final answer", {
+          step: step + 1,
+          answer: action.final.trim(),
+          sources: Array.from(sources.values()),
+          pendingEdits,
+          workingSet: Array.from(workingSet.values()),
+        });
         return { answer: action.final.trim(), sources: Array.from(sources.values()), pendingEdits, workingSet: Array.from(workingSet.values()) };
       }
 
@@ -34,6 +50,11 @@ export class AIChatClient {
         if (action.malformedJson || action.unsupportedJson) {
           invalidActionCount += 1;
           if (invalidActionCount > 2) {
+            emitDebug(logDebug, "agent-final", "Stopped after repeated invalid model actions", {
+              step: step + 1,
+              invalidActionCount,
+              content,
+            });
             return {
               answer: "I could not complete the action because the model kept returning invalid or truncated JSON. Try again with Edit mode and ask it to use chunked note creation.",
               sources: Array.from(sources.values()),
@@ -56,6 +77,10 @@ export class AIChatClient {
           });
           continue;
         }
+        emitDebug(logDebug, "agent-final", "Model returned plain text instead of an action", {
+          step: step + 1,
+          content,
+        });
         return { answer: content.trim(), sources: Array.from(sources.values()), pendingEdits, workingSet: Array.from(workingSet.values()) };
       }
 
@@ -72,7 +97,18 @@ export class AIChatClient {
         continue;
       }
 
+      emitDebug(logDebug, "tool-call", `Calling ${action.tool}`, {
+        step: step + 1,
+        tool: action.tool,
+        args: action.args ?? {},
+        reason: "reason" in action ? action.reason : undefined,
+      });
       const result = await tools.execute(action.tool, action.args ?? {});
+      emitDebug(logDebug, "tool-result", `Tool result from ${action.tool}`, {
+        step: step + 1,
+        tool: action.tool,
+        result,
+      });
       for (const source of result.sources ?? []) {
         sources.set(source.chunk.id, source);
         mergeWorkingSetItem(workingSet, {
@@ -108,14 +144,25 @@ export class AIChatClient {
           ? "Stop using tools and summarize the pending edits now as JSON: {\"final\":\"...\"}."
           : "Stop using tools and provide the best final answer now as JSON: {\"final\":\"...\"}. If you were creating a long note and have not finished it, say it was not completed.",
     });
-    const finalContent = await this.requestCompletion(messages, 1800);
+    const finalContent = await this.requestCompletion(messages, 1800, logDebug, 31);
     const finalAction = parseAgentAction(finalContent);
+    emitDebug(logDebug, "agent-final", "Agent stopped after step limit", {
+      answer: finalAction.final ?? finalContent,
+      sources: Array.from(sources.values()),
+      pendingEdits,
+      workingSet: Array.from(workingSet.values()),
+    });
     return { answer: (finalAction.final ?? finalContent).trim(), sources: Array.from(sources.values()), pendingEdits, workingSet: Array.from(workingSet.values()) };
   }
 
-  private async requestCompletion(messages: ChatMessage[], maxTokens: number): Promise<string> {
+  private async requestCompletion(messages: ChatMessage[], maxTokens: number, logDebug?: DebugLogger, step?: number): Promise<string> {
     const settings = this.getSettings();
     if (this.requiresApiKey(settings) && !settings.apiKey.trim()) {
+      emitDebug(logDebug, "model-error", "Request blocked because the API key is not configured", {
+        step,
+        apiBaseUrl: settings.apiBaseUrl,
+        model: settings.model,
+      });
       throw new Error("AI provider API key is not configured.");
     }
 
@@ -126,28 +173,66 @@ export class AIChatClient {
       headers.Authorization = `Bearer ${settings.apiKey}`;
     }
 
-    const response = await fetch(`${settings.apiBaseUrl.replace(/\/$/, "")}/v1/chat/completions`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model: settings.model,
-        messages,
-        temperature: 0.2,
-        max_tokens: maxTokens,
-        stream: false,
-      }),
+    const url = `${settings.apiBaseUrl.replace(/\/$/, "")}/v1/chat/completions`;
+    const startedAt = Date.now();
+    const requestBody = {
+      model: settings.model,
+      messages,
+      temperature: 0.2,
+      max_tokens: maxTokens,
+      stream: false,
+    };
+    emitDebug(logDebug, "model-request", `Request ${step ?? "?"} to ${settings.model}`, {
+      step,
+      url,
+      body: requestBody,
     });
+
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(requestBody),
+      });
+    } catch (error) {
+      emitDebug(logDebug, "model-error", `Request ${step ?? "?"} failed before a response`, {
+        step,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error),
+      });
+      throw error;
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
+      emitDebug(logDebug, "model-error", `Request ${step ?? "?"} failed with ${response.status}`, {
+        step,
+        status: response.status,
+        durationMs: Date.now() - startedAt,
+        errorText,
+      });
       throw new Error(`AI provider request failed (${response.status}): ${errorText}`);
     }
 
     const data = await response.json();
     const content = data?.choices?.[0]?.message?.content;
     if (typeof content !== "string") {
+      emitDebug(logDebug, "model-error", `Request ${step ?? "?"} returned an unexpected response`, {
+        step,
+        durationMs: Date.now() - startedAt,
+        response: data,
+      });
       throw new Error("AI provider returned an unexpected response.");
     }
+
+    emitDebug(logDebug, "model-response", `Response ${step ?? "?"} from ${settings.model}`, {
+      step,
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+      content,
+      response: data,
+    });
 
     return content.trim();
   }
@@ -241,8 +326,23 @@ interface AgentAction {
   tool?: string;
   args?: Record<string, unknown>;
   final?: string;
+  reason?: string;
   malformedJson?: boolean;
   unsupportedJson?: boolean;
+}
+
+function emitDebug(logDebug: DebugLogger | undefined, type: DebugLogEntry["type"], summary: string, data: unknown): void {
+  if (!logDebug) {
+    return;
+  }
+
+  logDebug({
+    id: `${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    timestamp: new Date().toISOString(),
+    type,
+    summary,
+    data,
+  });
 }
 
 function summarizeActionForHistory(action: AgentAction): string {
@@ -281,6 +381,7 @@ function parseAgentAction(content: string): AgentAction {
       tool: typeof parsed.tool === "string" ? parsed.tool : undefined,
       args: isRecord(parsed.args) ? parsed.args : undefined,
       final: typeof parsed.final === "string" ? parsed.final : undefined,
+      reason: typeof parsed.reason === "string" ? parsed.reason : undefined,
     };
     return action.tool || action.final ? action : { unsupportedJson: true };
   } catch {

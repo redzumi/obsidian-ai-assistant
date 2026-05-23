@@ -1,5 +1,5 @@
-import { ItemView, MarkdownRenderer, Notice, setIcon, WorkspaceLeaf } from "obsidian";
-import { AgentToolExecutor, ChatIntent, PendingEdit, SearchResult, WorkingSetItem } from "../core/types";
+import { ItemView, MarkdownRenderer, Notice, setIcon, TFolder, WorkspaceLeaf } from "obsidian";
+import { AgentToolExecutor, ChatIntent, DebugLogEntry, PendingEdit, SearchResult, WorkingSetItem } from "../core/types";
 import { AIChatClient } from "../services/aiChatClient";
 
 export const CHAT_VIEW_TYPE = "vault-chat-agent-chat-view";
@@ -10,7 +10,7 @@ interface ChatMessage {
   error?: boolean;
 }
 
-type PanelId = "edits" | "workingSet" | "sources";
+type PanelId = "edits" | "workingSet" | "sources" | "debug";
 
 export class ChatView extends ItemView {
   private messages: ChatMessage[] = [];
@@ -18,12 +18,14 @@ export class ChatView extends ItemView {
   private lastSources: SearchResult[] = [];
   private pendingEdits: PendingEdit[] = [];
   private workingSet: WorkingSetItem[] = [];
+  private debugLogs: DebugLogEntry[] = [];
   private isSending = false;
   private statusText = "";
   private readonly expandedPanels: Record<PanelId, boolean> = {
     edits: true,
     workingSet: false,
     sources: false,
+    debug: false,
   };
 
   constructor(
@@ -69,6 +71,25 @@ export class ChatView extends ItemView {
     const toolbar = this.containerEl.createDiv({ cls: "vault-chat-agent-toolbar" });
     this.renderIntentControl(toolbar);
 
+    const debugButton = toolbar.createEl("button", {
+      cls: this.expandedPanels.debug ? "vault-chat-agent-toolbar-button is-active" : "vault-chat-agent-toolbar-button",
+      attr: { "aria-label": "Show debug log" },
+    });
+    setIcon(debugButton, "bug");
+    this.registerDomEvent(debugButton, "click", () => {
+      this.expandedPanels.debug = !this.expandedPanels.debug;
+      this.render();
+    });
+
+    const exportButton = toolbar.createEl("button", { cls: "vault-chat-agent-toolbar-button", attr: { "aria-label": "Export chat debug data" } });
+    setIcon(exportButton, "download");
+    this.registerDomEvent(exportButton, "click", () => {
+      void this.exportDebugData().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        new Notice(message, 6000);
+      });
+    });
+
     const clearButton = toolbar.createEl("button", { attr: { "aria-label": "Clear chat" } });
     setIcon(clearButton, "trash-2");
     this.registerDomEvent(clearButton, "click", () => {
@@ -76,6 +97,7 @@ export class ChatView extends ItemView {
       this.lastSources = [];
       this.pendingEdits = [];
       this.workingSet = [];
+      this.debugLogs = [];
       this.render();
     });
 
@@ -105,6 +127,10 @@ export class ChatView extends ItemView {
 
     if (this.lastSources.length > 0) {
       this.renderSources();
+    }
+
+    if (this.expandedPanels.debug || this.debugLogs.length > 0) {
+      this.renderDebugLog();
     }
 
     this.renderInput();
@@ -267,6 +293,49 @@ export class ChatView extends ItemView {
     return panelEl.createDiv({ cls: `vault-chat-agent-panel-body vault-chat-agent-panel-${panelId}` });
   }
 
+  private renderDebugLog(): void {
+    const body = this.renderPanel("debug", `Debug log (${this.debugLogs.length})`);
+    if (!body) {
+      return;
+    }
+
+    const actions = body.createDiv({ cls: "vault-chat-agent-panel-actions" });
+    const copyButton = actions.createEl("button", { text: "Copy JSON" });
+    const exportButton = actions.createEl("button", { cls: "mod-cta", text: "Export JSON" });
+    copyButton.disabled = this.debugLogs.length === 0 && this.messages.length === 0;
+    exportButton.disabled = copyButton.disabled;
+
+    this.registerDomEvent(copyButton, "click", () => {
+      void this.copyDebugData().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        new Notice(message, 6000);
+      });
+    });
+    this.registerDomEvent(exportButton, "click", () => {
+      void this.exportDebugData().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        new Notice(message, 6000);
+      });
+    });
+
+    body.createDiv({
+      cls: "setting-item-description",
+      text: "Debug export can include prompts, note excerpts, tool results, and model responses.",
+    });
+
+    for (const entry of this.debugLogs.slice(-80)) {
+      const entryEl = body.createDiv({ cls: "vault-chat-agent-debug-entry" });
+      const header = entryEl.createDiv({ cls: "vault-chat-agent-debug-entry-header" });
+      header.createSpan({ cls: `vault-chat-agent-debug-type vault-chat-agent-debug-${entry.type}`, text: entry.type });
+      header.createSpan({ cls: "vault-chat-agent-debug-time", text: formatDebugTime(entry.timestamp) });
+      entryEl.createDiv({ cls: "vault-chat-agent-debug-summary", text: entry.summary });
+    }
+
+    if (this.debugLogs.length > 80) {
+      body.createDiv({ cls: "setting-item-description", text: `${this.debugLogs.length - 80} older debug events hidden.` });
+    }
+  }
+
   private renderInput(): void {
     const inputRow = this.containerEl.createDiv({ cls: "vault-chat-agent-input-row" });
     const textarea = inputRow.createEl("textarea", {
@@ -309,7 +378,12 @@ export class ChatView extends ItemView {
     try {
       this.statusText = this.intent === "edit" ? "Preparing reviewed changes..." : "Inspecting the vault...";
       this.render();
-      const result = await this.aiChatClient.completeWithAgent(content, history, this.agentTools, this.intent);
+      const result = await this.aiChatClient.completeWithAgent(content, history, this.agentTools, this.intent, (entry) => {
+        this.debugLogs.push(entry);
+        if (this.expandedPanels.debug) {
+          this.render();
+        }
+      });
       this.lastSources = result.sources;
       this.pendingEdits = this.pendingEdits.concat(result.pendingEdits);
       this.workingSet = mergeWorkingSet(
@@ -360,6 +434,52 @@ export class ChatView extends ItemView {
     new Notice(`Applied ${edits.length} edits.`, 3000);
     this.render();
   }
+
+  private async copyDebugData(): Promise<void> {
+    await navigator.clipboard.writeText(JSON.stringify(this.buildDebugExport(), null, 2));
+    new Notice("Copied debug JSON.", 3000);
+  }
+
+  private async exportDebugData(): Promise<void> {
+    const folderPath = "Vault Chat Agent Debug";
+    await this.ensureFolder(folderPath);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const path = `${folderPath}/chat-debug-${timestamp}.json`;
+    await this.app.vault.create(path, JSON.stringify(this.buildDebugExport(), null, 2));
+    new Notice(`Exported debug data: ${path}`, 5000);
+  }
+
+  private buildDebugExport(): Record<string, unknown> {
+    return {
+      exportedAt: new Date().toISOString(),
+      intent: this.intent,
+      isSending: this.isSending,
+      messages: this.messages,
+      pendingEdits: this.pendingEdits,
+      sources: this.lastSources,
+      workingSet: this.workingSet,
+      debugLogs: this.debugLogs,
+    };
+  }
+
+  private async ensureFolder(path: string): Promise<void> {
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (existing instanceof TFolder) {
+      return;
+    }
+    if (existing) {
+      throw new Error(`Cannot create debug export folder because a file already exists at: ${path}`);
+    }
+    await this.app.vault.createFolder(path);
+  }
+}
+
+function formatDebugTime(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return timestamp;
+  }
+  return date.toLocaleTimeString();
 }
 
 function mergeWorkingSet(existing: WorkingSetItem[], ...groups: WorkingSetItem[][]): WorkingSetItem[] {

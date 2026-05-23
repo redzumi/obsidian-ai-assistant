@@ -41,6 +41,11 @@
   color: var(--text-on-accent);
 }
 
+.vault-chat-agent-toolbar-button.is-active {
+  background: var(--background-modifier-hover);
+  color: var(--text-accent);
+}
+
 .vault-chat-agent-messages {
   display: flex;
   flex: 1;
@@ -223,6 +228,50 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.vault-chat-agent-panel-debug {
+  font-size: var(--font-ui-small);
+}
+
+.vault-chat-agent-debug-entry {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+}
+
+.vault-chat-agent-debug-entry-header {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.vault-chat-agent-debug-type {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  color: var(--text-accent);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  overflow: hidden;
+  padding: 1px 5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vault-chat-agent-debug-time {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
+
+.vault-chat-agent-debug-summary {
+  overflow-wrap: anywhere;
 }
 
 .vault-chat-agent-working-set-detail {

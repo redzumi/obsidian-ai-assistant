@@ -12,6 +12,14 @@ export interface ObsidianAIAssistantSettings {
   systemPrompt: string;
 }
 
+export interface DebugLogEntry {
+  id: string;
+  timestamp: string;
+  type: "agent-start" | "model-request" | "model-response" | "model-error" | "tool-call" | "tool-result" | "agent-final";
+  summary: string;
+  data: unknown;
+}
+
 export type IndexedFileStatus = "indexed" | "metadata-only" | "error";
 
 export interface IndexedDocument {
