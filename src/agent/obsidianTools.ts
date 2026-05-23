@@ -4,6 +4,8 @@ import { IndexStore } from "../core/indexStore";
 import { GraphSearchEngine } from "../search/graphSearch";
 
 const READABLE_EXTENSIONS = new Set(["md", "txt", "csv", "json", "canvas"]);
+const MAX_NEW_NOTE_CHUNK_CHARS = 2500;
+const MAX_NEW_NOTE_TOTAL_CHARS = 200000;
 
 interface NewNoteDraft {
   path: string;
@@ -65,6 +67,7 @@ export class ObsidianAgentTools {
       if (file) {
         throw new Error(`File already exists: ${edit.path}`);
       }
+      await this.ensureParentFolder(edit.path);
       await this.app.vault.create(edit.path, edit.newContent);
       return;
     }
@@ -91,6 +94,23 @@ export class ObsidianAgentTools {
     }
 
     await this.app.vault.modify(file, edit.newContent);
+  }
+
+  private async ensureParentFolder(path: string): Promise<void> {
+    const parts = path.split("/").filter(Boolean);
+    parts.pop();
+    let current = "";
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      const existing = this.app.vault.getAbstractFileByPath(current);
+      if (existing instanceof TFolder) {
+        continue;
+      }
+      if (existing) {
+        throw new Error(`Cannot create folder because a file already exists at: ${current}`);
+      }
+      await this.app.vault.createFolder(current);
+    }
   }
 
   private beginNewNote(args: Record<string, unknown>): AgentToolExecution {
@@ -127,7 +147,7 @@ export class ObsidianAgentTools {
 
   private appendNewNote(args: Record<string, unknown>): AgentToolExecution {
     const draftId = getStringArg(args, "draftId");
-    const content = getStringArg(args, "content");
+    const content = getTextArg(args, "content");
     if (!draftId) {
       return { content: "Missing required argument: draftId." };
     }
@@ -139,11 +159,18 @@ export class ObsidianAgentTools {
     if (!draft) {
       return { content: `New note draft not found: ${draftId}` };
     }
+    if (content.length > MAX_NEW_NOTE_CHUNK_CHARS) {
+      return { content: `Chunk is too large (${content.length} characters). Split appendNewNote content into chunks under ${MAX_NEW_NOTE_CHUNK_CHARS} characters.` };
+    }
+    const currentLength = draft.chunks.reduce((total, chunk) => total + chunk.length, 0);
+    if (currentLength + content.length > MAX_NEW_NOTE_TOTAL_CHARS) {
+      return { content: `New note draft is too large; maximum is ${MAX_NEW_NOTE_TOTAL_CHARS} characters.` };
+    }
 
     draft.chunks.push(content);
     return {
       workingSetItems: [{ path: draft.path, role: "edited", detail: `Appended draft chunk ${draft.chunks.length}` }],
-      content: [`Appended chunk ${draft.chunks.length} to ${draft.path}.`, `Current draft length: ${draft.chunks.join("").length} characters.`].join("\n"),
+      content: [`Appended chunk ${draft.chunks.length} to ${draft.path}.`, `Current draft length: ${currentLength + content.length} characters.`].join("\n"),
     };
   }
 
@@ -182,13 +209,18 @@ export class ObsidianAgentTools {
 
   private proposeNewNote(args: Record<string, unknown>): AgentToolExecution {
     const path = getStringArg(args, "path");
-    const content = getStringArg(args, "content");
+    const content = getTextArg(args, "content");
     const summary = getStringArg(args, "summary") ?? "Create note";
     if (!path) {
       return { content: "Missing required argument: path." };
     }
     if (typeof content !== "string") {
       return { content: "Missing required argument: content." };
+    }
+    if (content.length > MAX_NEW_NOTE_CHUNK_CHARS) {
+      return {
+        content: `Content is too large for proposeNewNote (${content.length} characters). Use beginNewNote, appendNewNote chunks, and finishNewNote instead.`,
+      };
     }
     const notePath = normalizeNewNotePath(path);
     const error = validateNewNotePath(this.app, notePath);
@@ -360,7 +392,7 @@ export class ObsidianAgentTools {
 
   private async proposeEdit(args: Record<string, unknown>): Promise<AgentToolExecution> {
     const path = getStringArg(args, "path");
-    const newContent = getStringArg(args, "newContent");
+    const newContent = getTextArg(args, "newContent");
     const summary = getStringArg(args, "summary") ?? "Proposed edit";
     if (!path) {
       return { content: "Missing required argument: path." };
@@ -401,8 +433,8 @@ export class ObsidianAgentTools {
 
   private async proposePatch(args: Record<string, unknown>): Promise<AgentToolExecution> {
     const path = getStringArg(args, "path");
-    const find = getStringArg(args, "find");
-    const replace = getStringArg(args, "replace");
+    const find = getTextArg(args, "find");
+    const replace = getTextArg(args, "replace");
     const summary = getStringArg(args, "summary") ?? "Proposed patch";
     if (!path) {
       return { content: "Missing required argument: path." };
@@ -464,8 +496,8 @@ export class ObsidianAgentTools {
       }
 
       const path = getStringArg(patch, "path");
-      const find = getStringArg(patch, "find");
-      const replace = getStringArg(patch, "replace");
+      const find = getTextArg(patch, "find");
+      const replace = getTextArg(patch, "replace");
       const patchSummary = getStringArg(patch, "summary") ?? summary;
       if (!path || typeof find !== "string" || find.length === 0 || typeof replace !== "string") {
         return { content: `Patch batch rejected: patch ${index + 1} requires path, find, and replace.` };
@@ -513,6 +545,11 @@ function getStringArg(args: Record<string, unknown>, name: string): string | und
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function getTextArg(args: Record<string, unknown>, name: string): string | undefined {
+  const value = args[name];
+  return typeof value === "string" ? value : undefined;
+}
+
 function getNumberArg(args: Record<string, unknown>, name: string): number | undefined {
   const value = args[name];
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
@@ -526,11 +563,17 @@ function pathExtension(path: string): string {
 
 function normalizeNewNotePath(path: string): string {
   const normalized = path.replace(/^\/+/, "").replace(/\/+$/, "").trim();
+  if (!normalized) {
+    return "";
+  }
   const lastPart = normalized.split("/").pop() ?? "";
   return lastPart.includes(".") ? normalized : `${normalized}.md`;
 }
 
 function validateNewNotePath(app: App, path: string): string | null {
+  if (!path) {
+    return "Missing required argument: path.";
+  }
   if (!READABLE_EXTENSIONS.has(pathExtension(path))) {
     return `Cannot create metadata-only file as a text note: ${path}`;
   }

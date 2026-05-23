@@ -20,8 +20,9 @@ export class AIChatClient {
     const sources = new Map<string, SearchResult>();
     const pendingEdits: PendingEdit[] = [];
     const workingSet = new Map<string, WorkingSetItem>();
+    let invalidActionCount = 0;
 
-    for (let step = 0; step < 5; step += 1) {
+    for (let step = 0; step < 30; step += 1) {
       const content = await this.requestCompletion(messages, 8000);
       const action = parseAgentAction(content);
 
@@ -31,7 +32,17 @@ export class AIChatClient {
 
       if (!action.tool) {
         if (action.malformedJson || action.unsupportedJson) {
-          messages.push({ role: "assistant", content });
+          invalidActionCount += 1;
+          if (invalidActionCount > 2) {
+            return {
+              answer: "I could not complete the action because the model kept returning invalid or truncated JSON. Try again with Edit mode and ask it to use chunked note creation.",
+              sources: Array.from(sources.values()),
+              pendingEdits,
+              workingSet: Array.from(workingSet.values()),
+            };
+          }
+
+          messages.push({ role: "assistant", content: summarizeInvalidAction(content, action) });
           messages.push({
             role: "user",
             content: [
@@ -48,7 +59,8 @@ export class AIChatClient {
         return { answer: content.trim(), sources: Array.from(sources.values()), pendingEdits, workingSet: Array.from(workingSet.values()) };
       }
 
-      messages.push({ role: "assistant", content });
+      invalidActionCount = 0;
+      messages.push({ role: "assistant", content: summarizeActionForHistory(action) });
       if (!isToolAllowed(action.tool, intent)) {
         messages.push({
           role: "user",
@@ -91,7 +103,10 @@ export class AIChatClient {
 
     messages.push({
       role: "user",
-      content: "Stop using tools and provide the best final answer now as JSON: {\"final\":\"...\"}.",
+      content:
+        pendingEdits.length > 0
+          ? "Stop using tools and summarize the pending edits now as JSON: {\"final\":\"...\"}."
+          : "Stop using tools and provide the best final answer now as JSON: {\"final\":\"...\"}. If you were creating a long note and have not finished it, say it was not completed.",
     });
     const finalContent = await this.requestCompletion(messages, 1800);
     const finalAction = parseAgentAction(finalContent);
@@ -208,6 +223,8 @@ export class AIChatClient {
 
 }
 
+const LARGE_ARG_KEYS = new Set(["content", "newContent", "find", "replace"]);
+
 const READ_ONLY_TOOLS = new Set(["searchNotes", "getCurrentNote", "openCurrentNote", "openNote", "listFolder", "getLinks", "getVaultOverview"]);
 const EDIT_TOOLS = new Set(["beginNewNote", "appendNewNote", "finishNewNote", "proposeNewNote", "proposePatch", "proposePatchBatch", "proposeEdit"]);
 
@@ -224,6 +241,30 @@ interface AgentAction {
   final?: string;
   malformedJson?: boolean;
   unsupportedJson?: boolean;
+}
+
+function summarizeActionForHistory(action: AgentAction): string {
+  if (!action.tool) {
+    return "{\"final\":\"...\"}";
+  }
+
+  const args: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(action.args ?? {})) {
+    if (LARGE_ARG_KEYS.has(key) && typeof value === "string") {
+      args[key] = `[omitted ${value.length} chars]`;
+    } else if (key === "patches" && Array.isArray(value)) {
+      args[key] = `[omitted ${value.length} patches]`;
+    } else {
+      args[key] = value;
+    }
+  }
+
+  return JSON.stringify({ tool: action.tool, args });
+}
+
+function summarizeInvalidAction(content: string, action: AgentAction): string {
+  const reason = action.malformedJson ? "malformed_json" : "unsupported_json";
+  return JSON.stringify({ error: reason, omittedResponseChars: content.length });
 }
 
 function parseAgentAction(content: string): AgentAction {
@@ -246,14 +287,47 @@ function parseAgentAction(content: string): AgentAction {
 }
 
 function extractJsonObject(content: string): string | null {
-  const fenced = /```(?:json)?\s*(\{[\s\S]*?\})\s*```/i.exec(content);
-  if (fenced) {
-    return fenced[1];
+  const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(content);
+  return findBalancedJsonObject(fenced ? fenced[1] : content);
+}
+
+function findBalancedJsonObject(content: string): string | null {
+  const start = content.indexOf("{");
+  if (start < 0) {
+    return null;
   }
 
-  const start = content.indexOf("{");
-  const end = content.lastIndexOf("}");
-  return start >= 0 && end > start ? content.slice(start, end + 1) : null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < content.length; index += 1) {
+    const char = content[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = inString;
+      continue;
+    }
+    if (char === "\"") {
+      inString = !inString;
+      continue;
+    }
+    if (inString) {
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return content.slice(start, index + 1);
+      }
+    }
+  }
+
+  return null;
 }
 
 function looksLikeJson(content: string): boolean {
