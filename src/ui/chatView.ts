@@ -21,6 +21,7 @@ export class ChatView extends ItemView {
   private workingSet: WorkingSetItem[] = [];
   private debugLogs: DebugLogEntry[] = [];
   private isSending = false;
+  private abortController: AbortController | null = null;
   private statusText = "";
   private readonly expandedPanels: Record<PanelId, boolean> = {
     edits: true,
@@ -348,6 +349,9 @@ export class ChatView extends ItemView {
     const sendButton = inputRow.createEl("button", { cls: "mod-cta", attr: { "aria-label": "Send" } });
     setIcon(sendButton, "send");
     sendButton.disabled = this.isSending;
+    const stopButton = inputRow.createEl("button", { attr: { "aria-label": "Stop" } });
+    setIcon(stopButton, "square");
+    stopButton.disabled = !this.isSending;
 
     const send = () => {
       const value = textarea.value.trim();
@@ -358,6 +362,9 @@ export class ChatView extends ItemView {
     };
 
     this.registerDomEvent(sendButton, "click", send);
+    this.registerDomEvent(stopButton, "click", () => {
+      this.abortController?.abort();
+    });
     this.registerDomEvent(textarea, "keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
@@ -374,6 +381,7 @@ export class ChatView extends ItemView {
 
     this.messages.push({ role: "user", content });
     this.isSending = true;
+    this.abortController = new AbortController();
     this.render();
 
     try {
@@ -393,7 +401,9 @@ export class ChatView extends ItemView {
         {
           intent: this.intent,
           pendingEdits: this.pendingEdits.map(summarizePendingEdit),
+          allowedCapabilities: this.intent === "edit" ? ["read", "propose_edit", "apply_edit"] : ["read", "apply_edit"],
         },
+        this.abortController.signal,
       );
       this.lastSources = result.sources;
       this.pendingEdits = this.pendingEdits.concat(result.pendingEdits);
@@ -404,11 +414,16 @@ export class ChatView extends ItemView {
       );
       this.messages.push({ role: "assistant", content: result.answer });
     } catch (error) {
+      if (isAbortError(error)) {
+        this.messages.push({ role: "assistant", content: "Stopped." });
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       new Notice(message, 6000);
       this.messages.push({ role: "assistant", content: message, error: true });
     } finally {
       this.isSending = false;
+      this.abortController = null;
       this.statusText = "";
       this.render();
     }
@@ -534,6 +549,10 @@ function formatDebugTime(timestamp: string): string {
     return timestamp;
   }
   return date.toLocaleTimeString();
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
 }
 
 function mergeWorkingSet(existing: WorkingSetItem[], ...groups: WorkingSetItem[][]): WorkingSetItem[] {

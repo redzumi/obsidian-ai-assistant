@@ -69,15 +69,19 @@ export interface AgentToolExecutor {
   applyEdit(edit: PendingEdit): Promise<void>;
 }
 
+export type McpToolCapability = "read" | "propose_edit" | "apply_edit";
+
 export interface McpToolDefinition {
   name: string;
   description: string;
+  capability: McpToolCapability;
   inputSchema: Record<string, unknown>;
 }
 
 export interface McpToolCallContext {
   intent: ChatIntent;
   pendingEdits: Array<Pick<PendingEdit, "id" | "path" | "kind" | "summary">>;
+  allowedCapabilities: McpToolCapability[];
 }
 
 export interface McpToolServer {

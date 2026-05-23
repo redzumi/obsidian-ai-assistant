@@ -36,7 +36,8 @@ export class AIChatClient {
     mcpServer: McpToolServer,
     intent: ChatIntent,
     logDebug?: DebugLogger,
-    context: McpToolCallContext = { intent, pendingEdits: [] },
+    context: McpToolCallContext = { intent, pendingEdits: [], allowedCapabilities: ["read"] },
+    signal?: AbortSignal,
   ): Promise<AgentCompletion> {
     const messages: ChatMessage[] = [
       { role: "system", content: this.buildAgentSystemPrompt(intent, context.pendingEdits) },
@@ -58,7 +59,8 @@ export class AIChatClient {
     });
 
     for (let step = 0; step < 30; step += 1) {
-      const assistantMessage = await this.requestCompletion(messages, toolDefinitions, 8000, logDebug, step + 1);
+      throwIfAborted(signal);
+      const assistantMessage = await this.requestCompletion(messages, toolDefinitions, 8000, logDebug, step + 1, signal);
       const toolCalls = assistantMessage.tool_calls ?? [];
       const content = assistantMessage.content?.trim() ?? "";
 
@@ -80,6 +82,7 @@ export class AIChatClient {
       });
 
       for (const toolCall of toolCalls) {
+        throwIfAborted(signal);
         const args = parseToolArguments(toolCall.function.arguments);
         emitDebug(logDebug, "tool-call", `Calling ${toolCall.function.name}`, {
           step: step + 1,
@@ -87,7 +90,7 @@ export class AIChatClient {
           args,
         });
 
-        const result = await mcpServer.callTool(toolCall.function.name, args, context);
+        const result = limitToolResult(await mcpServer.callTool(toolCall.function.name, args, context));
         emitDebug(logDebug, "tool-result", `Tool result from ${toolCall.function.name}`, {
           step: step + 1,
           tool: toolCall.function.name,
@@ -127,7 +130,7 @@ export class AIChatClient {
           ? "Stop using tools and summarize the pending edits now."
           : "Stop using tools and provide the best final answer now. If you were creating a long note and have not finished it, say it was not completed.",
     });
-    const finalMessage = await this.requestCompletion(messages, toolDefinitions, 1800, logDebug, 31);
+    const finalMessage = await this.requestCompletion(messages, toolDefinitions, 1800, logDebug, 31, signal);
     const answer = finalMessage.content?.trim() ?? "";
     emitDebug(logDebug, "agent-final", "Agent stopped after step limit", {
       answer,
@@ -138,7 +141,7 @@ export class AIChatClient {
     return { answer, sources: Array.from(sources.values()), pendingEdits, workingSet: Array.from(workingSet.values()) };
   }
 
-  private async requestCompletion(messages: ChatMessage[], toolDefinitions: McpToolDefinition[], maxTokens: number, logDebug?: DebugLogger, step?: number): Promise<ModelAssistantMessage> {
+  private async requestCompletion(messages: ChatMessage[], toolDefinitions: McpToolDefinition[], maxTokens: number, logDebug?: DebugLogger, step?: number, signal?: AbortSignal): Promise<ModelAssistantMessage> {
     const settings = this.getSettings();
     if (this.requiresApiKey(settings) && !settings.apiKey.trim()) {
       emitDebug(logDebug, "model-error", "Request blocked because the API key is not configured", {
@@ -179,6 +182,7 @@ export class AIChatClient {
         method: "POST",
         headers,
         body: JSON.stringify(requestBody),
+        signal,
       });
     } catch (error) {
       emitDebug(logDebug, "model-error", `Request ${step ?? "?"} failed before a response`, {
@@ -316,6 +320,47 @@ function summarizeToolResult(result: {
     pendingEdits: result.pendingEdits?.map(summarizePendingEdit),
     workingSetItems: result.workingSetItems,
   };
+}
+
+function limitToolResult(result: {
+  content: string;
+  sources?: SearchResult[];
+  pendingEdit?: PendingEdit;
+  pendingEdits?: PendingEdit[];
+  workingSetItems?: WorkingSetItem[];
+}): {
+  content: string;
+  sources?: SearchResult[];
+  pendingEdit?: PendingEdit;
+  pendingEdits?: PendingEdit[];
+  workingSetItems?: WorkingSetItem[];
+} {
+  return {
+    ...result,
+    content: truncateText(result.content, 6000),
+    sources: result.sources?.slice(0, 10).map((source) => ({
+      ...source,
+      chunk: {
+        ...source.chunk,
+        content: truncateText(source.chunk.content, 1800),
+      },
+    })),
+    pendingEdits: result.pendingEdits?.slice(0, 20),
+    workingSetItems: result.workingSetItems?.slice(0, 40),
+  };
+}
+
+function truncateText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, maxChars)}\n[truncated ${value.length - maxChars} chars]`;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new DOMException("Request cancelled.", "AbortError");
+  }
 }
 
 function summarizePendingEdit(edit: PendingEdit): Pick<PendingEdit, "id" | "path" | "kind" | "summary"> {
