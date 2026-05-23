@@ -1,5 +1,5 @@
-import builtins from "builtin-modules";
 import esbuild from "esbuild";
+import { builtinModules } from "module";
 import process from "process";
 
 const prod = process.argv[2] === "production";
@@ -25,7 +25,7 @@ esbuild
       "@lezer/common",
       "@lezer/highlight",
       "@lezer/lr",
-      ...builtins,
+      ...builtinModules,
     ],
     format: "cjs",
     target: "es2020",

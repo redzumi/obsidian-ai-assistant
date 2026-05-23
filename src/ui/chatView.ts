@@ -3,7 +3,7 @@ import { AgentToolExecutor, PendingEdit, SearchResult, WorkingSetItem } from "..
 import { AIChatClient } from "../services/aiChatClient";
 import { GraphSearchEngine } from "../search/graphSearch";
 
-export const CHAT_VIEW_TYPE = "obsidian-ai-assistant-chat-view";
+export const CHAT_VIEW_TYPE = "vault-ai-assistant-chat-view";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -46,7 +46,7 @@ export class ChatView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "Vault Chat Assistant";
+    return "Vault AI Assistant";
   }
 
   getIcon(): string {
@@ -54,13 +54,13 @@ export class ChatView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
-    this.containerEl.addClass("obsidian-ai-assistant-view");
+    this.containerEl.addClass("vault-ai-assistant-view");
     this.render();
   }
 
   startAgentTask(content: string): void {
     if (this.isSending) {
-      new Notice("Vault Chat Assistant is already working.", 3000);
+      new Notice("Vault AI Assistant is already working.", 3000);
       return;
     }
 
@@ -71,7 +71,7 @@ export class ChatView extends ItemView {
   private render(): void {
     this.containerEl.empty();
 
-    const toolbar = this.containerEl.createDiv({ cls: "obsidian-ai-assistant-toolbar" });
+    const toolbar = this.containerEl.createDiv({ cls: "vault-ai-assistant-toolbar" });
     this.renderModeControl(toolbar);
 
     const clearButton = toolbar.createEl("button", { attr: { "aria-label": "Clear chat" } });
@@ -84,7 +84,7 @@ export class ChatView extends ItemView {
       this.render();
     });
 
-    const messagesEl = this.containerEl.createDiv({ cls: "obsidian-ai-assistant-messages" });
+    const messagesEl = this.containerEl.createDiv({ cls: "vault-ai-assistant-messages" });
     if (this.messages.length === 0) {
       messagesEl.createEl("div", {
         cls: "setting-item-description",
@@ -97,7 +97,7 @@ export class ChatView extends ItemView {
     }
 
     if (this.isSending) {
-      messagesEl.createDiv({ cls: "obsidian-ai-assistant-status", text: this.statusText || "Working..." });
+      messagesEl.createDiv({ cls: "vault-ai-assistant-status", text: this.statusText || "Working..." });
     }
 
     if (this.pendingEdits.length > 0) {
@@ -117,7 +117,7 @@ export class ChatView extends ItemView {
   }
 
   private renderModeControl(toolbar: HTMLElement): void {
-    const modeControl = toolbar.createDiv({ cls: "obsidian-ai-assistant-mode-control", attr: { "aria-label": "Chat mode" } });
+    const modeControl = toolbar.createDiv({ cls: "vault-ai-assistant-mode-control", attr: { "aria-label": "Chat mode" } });
     const modes: Array<{ mode: ChatMode; label: string; description: string }> = [
       { mode: "chat", label: "Chat", description: "No note context" },
       { mode: "rag", label: "Context", description: "Search note context before answering" },
@@ -126,7 +126,7 @@ export class ChatView extends ItemView {
 
     for (const item of modes) {
       const button = modeControl.createEl("button", {
-        cls: `obsidian-ai-assistant-mode-button ${this.mode === item.mode ? "is-active" : ""}`,
+        cls: `vault-ai-assistant-mode-button ${this.mode === item.mode ? "is-active" : ""}`,
         text: item.label,
         attr: { "aria-label": item.description },
       });
@@ -150,9 +150,9 @@ export class ChatView extends ItemView {
 
   private async renderMessage(parent: HTMLElement, message: ChatMessage): Promise<void> {
     const cls = [
-      "obsidian-ai-assistant-message",
-      message.role === "user" ? "obsidian-ai-assistant-message-user" : "obsidian-ai-assistant-message-assistant",
-      message.error ? "obsidian-ai-assistant-message-error" : "",
+      "vault-ai-assistant-message",
+      message.role === "user" ? "vault-ai-assistant-message-user" : "vault-ai-assistant-message-assistant",
+      message.error ? "vault-ai-assistant-message-error" : "",
     ]
       .filter(Boolean)
       .join(" ");
@@ -172,11 +172,11 @@ export class ChatView extends ItemView {
     }
 
     for (const result of this.lastSources) {
-      const sourceEl = body.createDiv({ cls: "obsidian-ai-assistant-source" });
-      const title = sourceEl.createDiv({ cls: "obsidian-ai-assistant-source-title" });
+      const sourceEl = body.createDiv({ cls: "vault-ai-assistant-source" });
+      const title = sourceEl.createDiv({ cls: "vault-ai-assistant-source-title" });
       title.setText(result.chunk.filePath);
       sourceEl.createDiv({
-        cls: "obsidian-ai-assistant-source-snippet",
+        cls: "vault-ai-assistant-source-snippet",
         text: result.chunk.content.slice(0, 280),
       });
     }
@@ -188,7 +188,7 @@ export class ChatView extends ItemView {
       return;
     }
 
-    const batchActions = body.createDiv({ cls: "obsidian-ai-assistant-panel-actions" });
+    const batchActions = body.createDiv({ cls: "vault-ai-assistant-panel-actions" });
     const applyAllButton = batchActions.createEl("button", { cls: "mod-cta", text: "Apply all" });
     const rejectAllButton = batchActions.createEl("button", { text: "Reject all" });
     applyAllButton.disabled = this.isSending;
@@ -201,25 +201,25 @@ export class ChatView extends ItemView {
     });
 
     for (const edit of this.pendingEdits) {
-      const editEl = body.createDiv({ cls: "obsidian-ai-assistant-edit" });
-      const header = editEl.createDiv({ cls: "obsidian-ai-assistant-edit-header" });
-      header.createDiv({ cls: "obsidian-ai-assistant-edit-title", text: edit.path });
-      header.createDiv({ cls: "obsidian-ai-assistant-edit-summary", text: `${edit.kind === "patch" ? "Patch" : "Full edit"}: ${edit.summary}` });
+      const editEl = body.createDiv({ cls: "vault-ai-assistant-edit" });
+      const header = editEl.createDiv({ cls: "vault-ai-assistant-edit-header" });
+      header.createDiv({ cls: "vault-ai-assistant-edit-title", text: edit.path });
+      header.createDiv({ cls: "vault-ai-assistant-edit-summary", text: `${edit.kind === "patch" ? "Patch" : "Full edit"}: ${edit.summary}` });
 
-      const diffEl = editEl.createDiv({ cls: "obsidian-ai-assistant-diff" });
+      const diffEl = editEl.createDiv({ cls: "vault-ai-assistant-diff" });
       const diff = buildEditDiff(edit);
       for (const line of diff.slice(0, 240)) {
         diffEl.createDiv({
-          cls: `obsidian-ai-assistant-diff-line obsidian-ai-assistant-diff-${line.type}`,
+          cls: `vault-ai-assistant-diff-line vault-ai-assistant-diff-${line.type}`,
           text: `${line.prefix} ${line.text}`,
         });
       }
 
       if (diff.length > 240) {
-        diffEl.createDiv({ cls: "obsidian-ai-assistant-diff-line", text: `[${diff.length - 240} more diff lines hidden]` });
+        diffEl.createDiv({ cls: "vault-ai-assistant-diff-line", text: `[${diff.length - 240} more diff lines hidden]` });
       }
 
-      const actions = editEl.createDiv({ cls: "obsidian-ai-assistant-edit-actions" });
+      const actions = editEl.createDiv({ cls: "vault-ai-assistant-edit-actions" });
       const openButton = actions.createEl("button", { text: "Open" });
       const applyButton = actions.createEl("button", { cls: "mod-cta", text: "Apply" });
       const rejectButton = actions.createEl("button", { text: "Reject" });
@@ -245,10 +245,10 @@ export class ChatView extends ItemView {
     }
 
     for (const item of this.workingSet.slice(0, 80)) {
-      const itemEl = body.createDiv({ cls: "obsidian-ai-assistant-working-set-item" });
-      itemEl.createSpan({ cls: `obsidian-ai-assistant-working-set-role obsidian-ai-assistant-working-set-${item.role}`, text: item.role });
-      itemEl.createSpan({ cls: "obsidian-ai-assistant-working-set-path", text: item.path });
-      itemEl.createSpan({ cls: "obsidian-ai-assistant-working-set-detail", text: item.detail });
+      const itemEl = body.createDiv({ cls: "vault-ai-assistant-working-set-item" });
+      itemEl.createSpan({ cls: `vault-ai-assistant-working-set-role vault-ai-assistant-working-set-${item.role}`, text: item.role });
+      itemEl.createSpan({ cls: "vault-ai-assistant-working-set-path", text: item.path });
+      itemEl.createSpan({ cls: "vault-ai-assistant-working-set-detail", text: item.detail });
     }
 
     if (this.workingSet.length > 80) {
@@ -257,9 +257,9 @@ export class ChatView extends ItemView {
   }
 
   private renderPanel(panelId: PanelId, title: string): HTMLElement | null {
-    const panelEl = this.containerEl.createDiv({ cls: "obsidian-ai-assistant-panel" });
+    const panelEl = this.containerEl.createDiv({ cls: "vault-ai-assistant-panel" });
     const header = panelEl.createEl("button", {
-      cls: "obsidian-ai-assistant-panel-header",
+      cls: "vault-ai-assistant-panel-header",
       attr: { "aria-expanded": String(this.expandedPanels[panelId]) },
     });
     setIcon(header, this.expandedPanels[panelId] ? "chevron-down" : "chevron-right");
@@ -273,13 +273,13 @@ export class ChatView extends ItemView {
       return null;
     }
 
-    return panelEl.createDiv({ cls: `obsidian-ai-assistant-panel-body obsidian-ai-assistant-panel-${panelId}` });
+    return panelEl.createDiv({ cls: `vault-ai-assistant-panel-body vault-ai-assistant-panel-${panelId}` });
   }
 
   private renderInput(): void {
-    const inputRow = this.containerEl.createDiv({ cls: "obsidian-ai-assistant-input-row" });
+    const inputRow = this.containerEl.createDiv({ cls: "vault-ai-assistant-input-row" });
     const textarea = inputRow.createEl("textarea", {
-      cls: "obsidian-ai-assistant-input",
+      cls: "vault-ai-assistant-input",
       attr: {
         placeholder: this.mode === "agent" ? "Ask the agent..." : this.mode === "rag" ? "Ask with note context..." : "Message assistant...",
       },

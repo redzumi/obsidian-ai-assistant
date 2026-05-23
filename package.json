@@ -1,7 +1,7 @@
 {
-  "name": "vault-chat-assistant",
+  "name": "vault-ai-assistant",
   "version": "0.1.6",
-  "description": "AI assistant plugin for Obsidian vault chat, search, and reviewed edits",
+  "description": "Chat with an AI assistant that can search your vault, inspect notes, and prepare edits for review",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
@@ -19,7 +19,6 @@
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.11.30",
-    "builtin-modules": "^3.3.0",
     "esbuild": "^0.20.2",
     "obsidian": "^1.5.12",
     "release-it": "^20.0.1",
