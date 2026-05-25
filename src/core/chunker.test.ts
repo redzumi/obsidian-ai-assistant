@@ -11,3 +11,12 @@ test("SemanticChunker keeps overlap when splitting long text", () => {
   equal(chunks[1].content, "hijklmnop");
   ok(chunks[1].startOffset < chunks[0].endOffset);
 });
+
+test("SemanticChunker keeps offsets aligned after trimming whitespace", () => {
+  const chunker = new SemanticChunker(10, 3);
+  const chunks = chunker.chunkDocument("  abcdefghijklmnop  ", "Note.md", 1);
+
+  equal(chunks[0].content, "abcdefghij");
+  equal(chunks[0].startOffset, 2);
+  equal(chunks[0].endOffset, 12);
+});

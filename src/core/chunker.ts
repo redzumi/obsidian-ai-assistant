@@ -18,12 +18,13 @@ export class SemanticChunker {
     const chunks: IndexedChunk[] = [];
 
     for (const section of sections) {
+      const leadingWhitespace = section.content.length - section.content.trimStart().length;
       const normalized = section.content.trim();
       if (!normalized) {
         continue;
       }
 
-      for (const piece of this.splitSection(normalized, section.startOffset)) {
+      for (const piece of this.splitSection(normalized, section.startOffset + leadingWhitespace)) {
         chunks.push({
           id: `${filePath}:${piece.startOffset}:${piece.endOffset}`,
           filePath,
@@ -121,12 +122,14 @@ export class SemanticChunker {
 
     while (cursor < text.length) {
       const end = Math.min(text.length, cursor + this.maxChars);
-      const slice = text.slice(cursor, end).trim();
+      const rawSlice = text.slice(cursor, end);
+      const leadingWhitespace = rawSlice.length - rawSlice.trimStart().length;
+      const slice = rawSlice.trim();
       if (slice) {
         chunks.push({
           content: slice,
-          startOffset: absoluteStart + cursor,
-          endOffset: absoluteStart + end,
+          startOffset: absoluteStart + cursor + leadingWhitespace,
+          endOffset: absoluteStart + cursor + leadingWhitespace + slice.length,
         });
       }
       if (end === text.length) {

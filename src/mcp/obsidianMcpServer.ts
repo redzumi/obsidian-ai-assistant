@@ -11,10 +11,11 @@ export class ObsidianMcpServer implements McpToolServer {
   ) {}
 
   listTools(context: McpToolCallContext): McpToolDefinition[] {
+    const isPlanMode = context.intent === "edit" && context.runMode === "plan";
     return [
       ...READ_ONLY_TOOLS,
-      ...(context.pendingEdits.length > 0 ? APPLY_TOOLS : []),
-      ...(context.intent === "edit" ? EDIT_TOOLS : []),
+      ...(!isPlanMode && context.pendingEdits.length > 0 ? APPLY_TOOLS : []),
+      ...(!isPlanMode && context.intent === "edit" ? EDIT_TOOLS : []),
     ].filter((tool) => context.allowedCapabilities.includes(tool.capability));
   }
 
