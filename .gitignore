@@ -1,6 +1,7 @@
 node_modules/
 main.js
 dist/
+.test-build/
 *.map
 .DS_Store
 *.zip

@@ -5,6 +5,7 @@
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
+    "test": "node scripts/run-tests.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production && node scripts/copy-dist.mjs",
     "dist": "yarn build",
     "release": "release-it"
