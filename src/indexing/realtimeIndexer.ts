@@ -2,6 +2,7 @@ import { EventRef, MetadataCache, TAbstractFile, TFile, TFolder, Vault } from "o
 import { SemanticChunker } from "../core/chunker";
 import { IndexStore } from "../core/indexStore";
 import { indexVaultFile } from "./indexAll";
+import { scheduledPathMatchesTarget } from "./realtimeIndexerUtils";
 
 type PersistCallback = () => Promise<void>;
 type UpdateCallback = () => void;
@@ -109,9 +110,8 @@ export class RealtimeIndexer {
   }
 
   private clearScheduledIndexes(path: string): void {
-    const folderPrefix = `${path.replace(/\/+$/, "")}/`;
     for (const [filePath, timerId] of this.timers.entries()) {
-      if (filePath === path || filePath.startsWith(folderPrefix)) {
+      if (scheduledPathMatchesTarget(filePath, path)) {
         window.clearTimeout(timerId);
         this.timers.delete(filePath);
       }
