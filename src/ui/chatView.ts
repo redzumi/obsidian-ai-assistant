@@ -1,4 +1,4 @@
-import { ItemView, MarkdownRenderer, Notice, setIcon, TFile, TFolder, WorkspaceLeaf } from "obsidian";
+import { App, ItemView, MarkdownRenderer, Notice, setIcon, TFile, TFolder, WorkspaceLeaf } from "obsidian";
 import { AgentToolExecution, AgentToolExecutor, ChatIntent, ChatRunMode, ChatSearchScope, ChatSearchScopeMode, DebugLogEntry, PendingEdit, SearchResult, WorkingSetItem } from "../core/types";
 import { ObsidianMcpServer, summarizePendingEdit } from "../mcp/obsidianMcpServer";
 import { AIChatClient } from "../services/aiChatClient";
@@ -19,6 +19,20 @@ interface ChatMention {
   path?: string;
 }
 
+interface MentionSuggestion {
+  kind: MentionKind;
+  label: string;
+  detail: string;
+  insertText: string;
+  searchText: string;
+}
+
+interface MentionTrigger {
+  from: number;
+  to: number;
+  query: string;
+}
+
 type PanelId = "edits" | "workingSet" | "sources" | "debug";
 
 export class ChatView extends ItemView {
@@ -29,6 +43,8 @@ export class ChatView extends ItemView {
   private searchScopeMode: ChatSearchScopeMode = "vault";
   private pendingEdits: PendingEdit[] = [];
   private draftMentions: ChatMention[] = [];
+  private mentionSuggestions: MentionSuggestion[] = [];
+  private selectedMentionIndex = 0;
   private workingSet: WorkingSetItem[] = [];
   private debugLogs: DebugLogEntry[] = [];
   private isSending = false;
@@ -119,6 +135,7 @@ export class ChatView extends ItemView {
       this.lastSources = [];
       this.pendingEdits = [];
       this.draftMentions = [];
+      this.mentionSuggestions = [];
       this.workingSet = [];
       this.debugLogs = [];
       this.render();
@@ -405,6 +422,7 @@ export class ChatView extends ItemView {
   private renderInput(): void {
     const mentionsEl = this.containerEl.createDiv({ cls: "vault-chat-agent-mentions" });
     this.renderDraftMentions(mentionsEl);
+    const suggestionsEl = this.containerEl.createDiv({ cls: "vault-chat-agent-mention-suggestions" });
 
     const inputRow = this.containerEl.createDiv({ cls: "vault-chat-agent-input-row" });
     const textarea = inputRow.createEl("textarea", {
@@ -443,14 +461,45 @@ export class ChatView extends ItemView {
       this.abortController?.abort();
     });
     this.registerDomEvent(textarea, "keydown", (event) => {
+      if (this.mentionSuggestions.length > 0) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          this.selectedMentionIndex = (this.selectedMentionIndex + 1) % this.mentionSuggestions.length;
+          this.renderMentionSuggestions(suggestionsEl, textarea);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          this.selectedMentionIndex = (this.selectedMentionIndex - 1 + this.mentionSuggestions.length) % this.mentionSuggestions.length;
+          this.renderMentionSuggestions(suggestionsEl, textarea);
+          return;
+        }
+        if (event.key === "Enter" || event.key === "Tab") {
+          event.preventDefault();
+          this.insertMentionSuggestion(textarea, this.mentionSuggestions[this.selectedMentionIndex]);
+          this.updateMentionState(textarea, mentionsEl, suggestionsEl);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          this.mentionSuggestions = [];
+          this.renderMentionSuggestions(suggestionsEl, textarea);
+          return;
+        }
+      }
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         send();
       }
     });
     this.registerDomEvent(textarea, "input", () => {
-      this.draftMentions = parseMentions(textarea.value, (path) => this.resolveMentionPath(path));
-      this.renderDraftMentions(mentionsEl);
+      this.updateMentionState(textarea, mentionsEl, suggestionsEl);
+    });
+    this.registerDomEvent(textarea, "blur", () => {
+      window.setTimeout(() => {
+        this.mentionSuggestions = [];
+        this.renderMentionSuggestions(suggestionsEl, textarea);
+      }, 120);
     });
   }
 
@@ -464,6 +513,64 @@ export class ChatView extends ItemView {
     for (const mention of this.draftMentions) {
       parent.createSpan({ cls: `vault-chat-agent-mention vault-chat-agent-mention-${mention.kind}`, text: formatMention(mention) });
     }
+  }
+
+  private updateMentionState(textarea: HTMLTextAreaElement, mentionsEl: HTMLElement, suggestionsEl: HTMLElement): void {
+    this.draftMentions = parseMentions(textarea.value, (path) => this.resolveMentionPath(path));
+    this.renderDraftMentions(mentionsEl);
+    this.mentionSuggestions = this.getMentionSuggestions(textarea);
+    if (this.selectedMentionIndex >= this.mentionSuggestions.length) {
+      this.selectedMentionIndex = 0;
+    }
+    this.renderMentionSuggestions(suggestionsEl, textarea);
+  }
+
+  private getMentionSuggestions(textarea: HTMLTextAreaElement): MentionSuggestion[] {
+    const trigger = getMentionTrigger(textarea.value, textarea.selectionStart);
+    if (!trigger) {
+      return [];
+    }
+
+    const query = trigger.query.toLocaleLowerCase();
+    return buildMentionSuggestions(this.app)
+      .filter((suggestion) => !query || suggestion.searchText.toLocaleLowerCase().includes(query))
+      .slice(0, 8);
+  }
+
+  private renderMentionSuggestions(parent: HTMLElement, textarea: HTMLTextAreaElement): void {
+    parent.empty();
+    if (this.mentionSuggestions.length === 0) {
+      return;
+    }
+
+    this.mentionSuggestions.forEach((suggestion, index) => {
+      const button = parent.createEl("button", {
+        cls: index === this.selectedMentionIndex ? "vault-chat-agent-mention-suggestion is-selected" : "vault-chat-agent-mention-suggestion",
+      });
+      button.createSpan({ cls: "vault-chat-agent-mention-suggestion-label", text: suggestion.label });
+      button.createSpan({ cls: "vault-chat-agent-mention-suggestion-detail", text: suggestion.detail });
+      this.registerDomEvent(button, "mousedown", (event) => {
+        event.preventDefault();
+        this.insertMentionSuggestion(textarea, suggestion);
+        this.updateMentionState(textarea, parent.previousElementSibling instanceof HTMLElement ? parent.previousElementSibling : parent, parent);
+      });
+    });
+  }
+
+  private insertMentionSuggestion(textarea: HTMLTextAreaElement, suggestion: MentionSuggestion): void {
+    const trigger = getMentionTrigger(textarea.value, textarea.selectionStart);
+    if (!trigger) {
+      return;
+    }
+
+    const before = textarea.value.slice(0, trigger.from);
+    const after = textarea.value.slice(trigger.to);
+    const needsSpace = after.length === 0 || /^\s/.test(after) ? "" : " ";
+    const inserted = `${suggestion.insertText}${needsSpace}`;
+    textarea.value = `${before}${inserted}${after}`;
+    const cursor = before.length + inserted.length;
+    textarea.setSelectionRange(cursor, cursor);
+    textarea.focus();
   }
 
   private async sendMessage(content: string): Promise<void> {
@@ -782,6 +889,64 @@ function formatMention(mention: ChatMention): string {
     return "@current";
   }
   return `@${mention.path ?? mention.raw.replace(/^@/, "")}`;
+}
+
+function getMentionTrigger(content: string, cursor: number): MentionTrigger | null {
+  const beforeCursor = content.slice(0, cursor);
+  const match = beforeCursor.match(/(^|\s)@([^\s@[\]]*)$/);
+  if (!match) {
+    return null;
+  }
+
+  const token = match[0];
+  const leadingWhitespace = token.startsWith("@") ? 0 : 1;
+  const from = cursor - token.length + leadingWhitespace;
+  return {
+    from,
+    to: cursor,
+    query: match[2] ?? "",
+  };
+}
+
+function buildMentionSuggestions(app: App): MentionSuggestion[] {
+  const currentFile = app.workspace.getActiveFile();
+  const current: MentionSuggestion[] = [
+    {
+      kind: "current",
+      label: "@current",
+      detail: currentFile?.path ?? "Active note",
+      insertText: "@current",
+      searchText: `current ${currentFile?.path ?? ""}`,
+    },
+  ];
+
+  const files = app.vault
+    .getFiles()
+    .filter((file) => file.extension === "md")
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .slice(0, 250)
+    .map((file) => ({
+      kind: "note" as const,
+      label: file.basename,
+      detail: file.path,
+      insertText: `@[[${file.path.replace(/\.md$/i, "")}]]`,
+      searchText: `${file.basename} ${file.path}`,
+    }));
+
+  const folders = app.vault
+    .getAllLoadedFiles()
+    .filter((file): file is TFolder => file instanceof TFolder && file.path.length > 0)
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .slice(0, 120)
+    .map((folder) => ({
+      kind: "folder" as const,
+      label: folder.name || folder.path,
+      detail: folder.path,
+      insertText: `@${folder.path}/`,
+      searchText: `${folder.name} ${folder.path}`,
+    }));
+
+  return [...current, ...files, ...folders];
 }
 
 function mergeWorkingSet(existing: WorkingSetItem[], ...groups: WorkingSetItem[][]): WorkingSetItem[] {
