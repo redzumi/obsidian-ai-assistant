@@ -2,6 +2,7 @@ node_modules/
 main.js
 dist/
 .test-build/
+.firecrawl/
 *.map
 .DS_Store
 *.zip

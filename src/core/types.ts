@@ -1,4 +1,10 @@
 export type ChatIntent = "ask" | "edit";
+export type ChatSearchScopeMode = "vault" | "current-note" | "current-folder";
+
+export interface ChatSearchScope {
+  mode: ChatSearchScopeMode;
+  path?: string;
+}
 
 export interface ObsidianAIAssistantSettings {
   apiKey: string;
@@ -10,6 +16,7 @@ export interface ObsidianAIAssistantSettings {
   realtimeIndexing: boolean;
   defaultIntent: ChatIntent;
   systemPrompt: string;
+  stripReasoningBlocks: boolean;
 }
 
 export interface DebugLogEntry {
@@ -65,7 +72,7 @@ export interface AgentToolExecution {
 }
 
 export interface AgentToolExecutor {
-  execute(toolName: string, args: Record<string, unknown>): Promise<AgentToolExecution>;
+  execute(toolName: string, args: Record<string, unknown>, context?: McpToolCallContext): Promise<AgentToolExecution>;
   applyEdit(edit: PendingEdit): Promise<void>;
 }
 
@@ -80,6 +87,7 @@ export interface McpToolDefinition {
 
 export interface McpToolCallContext {
   intent: ChatIntent;
+  searchScope?: ChatSearchScope;
   pendingEdits: Array<Pick<PendingEdit, "id" | "path" | "kind" | "summary">>;
   allowedCapabilities: McpToolCapability[];
 }
@@ -140,5 +148,6 @@ export const DEFAULT_SETTINGS: ObsidianAIAssistantSettings = {
   topK: 6,
   realtimeIndexing: true,
   defaultIntent: "ask",
+  stripReasoningBlocks: true,
   systemPrompt: "Assume the user is not a developer. Explain technical details in plain language, avoid unnecessary implementation jargon, and ask before expecting them to make code-level decisions.",
 };

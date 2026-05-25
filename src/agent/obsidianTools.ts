@@ -1,5 +1,5 @@
 import { App, TFile, TFolder } from "obsidian";
-import { AgentToolExecution, PendingEdit } from "../core/types";
+import { AgentToolExecution, ChatSearchScope, IndexedChunk, McpToolCallContext, PendingEdit } from "../core/types";
 import { IndexStore } from "../core/indexStore";
 import { GraphSearchEngine } from "../search/graphSearch";
 
@@ -24,10 +24,10 @@ export class ObsidianAgentTools {
     private readonly getTopK: () => number,
   ) {}
 
-  async execute(toolName: string, args: Record<string, unknown>): Promise<AgentToolExecution> {
+  async execute(toolName: string, args: Record<string, unknown>, context?: McpToolCallContext): Promise<AgentToolExecution> {
     switch (toolName) {
       case "searchNotes":
-        return this.searchNotes(args);
+        return this.searchNotes(args, context?.searchScope);
       case "getCurrentNote":
         return this.getCurrentNote();
       case "openCurrentNote":
@@ -240,18 +240,21 @@ export class ObsidianAgentTools {
     };
   }
 
-  private searchNotes(args: Record<string, unknown>): AgentToolExecution {
+  private searchNotes(args: Record<string, unknown>, searchScope: ChatSearchScope | undefined): AgentToolExecution {
     const query = getStringArg(args, "query");
     const topK = getNumberArg(args, "topK") ?? this.getTopK();
     if (!query) {
       return { content: "Missing required argument: query." };
     }
 
-    const sources = this.searchEngine.search(query, Math.max(1, Math.min(20, topK)));
+    const scopeFilter = createScopeFilter(searchScope);
+    const sources = this.searchEngine.search(query, Math.max(1, Math.min(20, topK)), scopeFilter);
     if (sources.length === 0) {
-      return { content: `No indexed chunks matched query: ${query}` };
+      const scopeDescription = describeSearchScope(searchScope);
+      return { content: `No indexed chunks matched query${scopeDescription ? ` in ${scopeDescription}` : ""}: ${query}` };
     }
 
+    const scopeDescription = describeSearchScope(searchScope);
     return {
       sources,
       workingSetItems: unique(sources.map((result) => result.chunk.filePath)).map((path) => ({
@@ -259,13 +262,18 @@ export class ObsidianAgentTools {
         role: "searched",
         detail: `Matched query: ${query}`,
       })),
-      content: sources
+      content: [
+        scopeDescription ? `Scope: ${scopeDescription}` : "",
+        sources
         .map((result, index) => {
           const chunk = result.chunk;
           const heading = chunk.headings.length ? `\nSection: ${chunk.headings.join(" > ")}` : "";
           return `[${index + 1}] ${chunk.filePath}${heading}\nScore: ${result.score.toFixed(3)}\n${clip(chunk.content, 1200)}`;
         })
-        .join("\n\n---\n\n"),
+          .join("\n\n---\n\n"),
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
     };
   }
 
@@ -597,6 +605,39 @@ function createNewNoteEdit(path: string, summary: string, content: string): Pend
 
 function clip(content: string, maxChars: number): string {
   return content.length <= maxChars ? content : `${content.slice(0, maxChars)}\n\n[truncated]`;
+}
+
+function createScopeFilter(searchScope: ChatSearchScope | undefined): ((chunk: IndexedChunk) => boolean) | undefined {
+  if (!searchScope || searchScope.mode === "vault" || !searchScope.path) {
+    return undefined;
+  }
+
+  if (searchScope.mode === "current-note") {
+    return (chunk) => chunk.filePath === searchScope.path;
+  }
+
+  if (searchScope.mode === "current-folder") {
+    const folderPath = searchScope.path.replace(/\/$/, "");
+    if (!folderPath) {
+      return undefined;
+    }
+    return (chunk) => chunk.filePath === folderPath || chunk.filePath.startsWith(`${folderPath}/`);
+  }
+
+  return undefined;
+}
+
+function describeSearchScope(searchScope: ChatSearchScope | undefined): string {
+  if (!searchScope || searchScope.mode === "vault") {
+    return "whole vault";
+  }
+  if (searchScope.mode === "current-note" && searchScope.path) {
+    return `current note ${searchScope.path}`;
+  }
+  if (searchScope.mode === "current-folder" && searchScope.path) {
+    return `current folder ${searchScope.path}`;
+  }
+  return "";
 }
 
 function unique(values: string[]): string[] {

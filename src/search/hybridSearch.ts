@@ -15,7 +15,7 @@ export class HybridSearchEngine {
     return [...this.chunks];
   }
 
-  search(query: string, topK: number): SearchResult[] {
+  search(query: string, topK: number, filter?: (chunk: IndexedChunk) => boolean): SearchResult[] {
     const queryTerms = tokenize(query);
     if (queryTerms.length === 0) {
       return [];
@@ -23,6 +23,7 @@ export class HybridSearchEngine {
 
     const querySet = new Set(queryTerms);
     const scored = this.chunks
+      .filter((chunk) => !filter || filter(chunk))
       .map((chunk) => ({ chunk, score: this.scoreChunk(chunk, queryTerms, querySet) }))
       .filter((result) => result.score > 0)
       .sort((a, b) => b.score - a.score);

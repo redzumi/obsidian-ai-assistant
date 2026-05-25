@@ -1,4 +1,4 @@
-import { AgentCompletion, ChatIntent, DebugLogEntry, McpToolCallContext, McpToolDefinition, McpToolServer, ObsidianAIAssistantSettings, PendingEdit, SearchResult, WorkingSetItem } from "../core/types";
+import { AgentCompletion, ChatIntent, ChatSearchScope, DebugLogEntry, McpToolCallContext, McpToolDefinition, McpToolServer, ObsidianAIAssistantSettings, PendingEdit, SearchResult, WorkingSetItem } from "../core/types";
 import { OpenAiCompatibleAdapter } from "../providers/openAiCompatibleAdapter";
 import { ChatProviderAdapter, ProviderAssistantMessage, ProviderMessage } from "../providers/types";
 
@@ -47,14 +47,15 @@ export class AIChatClient {
       const content = assistantMessage.content.trim();
 
       if (toolCalls.length === 0) {
+        const answer = this.cleanAssistantContent(content);
         emitDebug(logDebug, "agent-final", "Model returned final answer", {
           step: step + 1,
-          answer: content,
+          answer,
           sources: Array.from(sources.values()),
           pendingEdits,
           workingSet: Array.from(workingSet.values()),
         });
-        return { answer: content, sources: Array.from(sources.values()), pendingEdits, workingSet: Array.from(workingSet.values()) };
+        return { answer, sources: Array.from(sources.values()), pendingEdits, workingSet: Array.from(workingSet.values()) };
       }
 
       messages.push({
@@ -116,7 +117,7 @@ export class AIChatClient {
           : "Stop using tools and provide the best final answer now. If you were creating a long note and have not finished it, say it was not completed.",
     });
     const finalMessage = await this.requestCompletion(messages, toolDefinitions, 1800, logDebug, 31, signal);
-    const answer = finalMessage.content.trim();
+    const answer = this.cleanAssistantContent(finalMessage.content.trim());
     emitDebug(logDebug, "agent-final", "Agent stopped after step limit", {
       answer,
       sources: Array.from(sources.values()),
@@ -216,6 +217,7 @@ export class AIChatClient {
     const customSystemPrompt = this.getSettings().systemPrompt.trim();
     const pendingEdits = context.pendingEdits;
     const pendingEditsCanBeApplied = context.allowedCapabilities.includes("apply_edit");
+    const searchScope = describeSearchScope(context.searchScope);
     const editPolicy =
       intent === "edit"
         ? [
@@ -237,6 +239,7 @@ export class AIChatClient {
       "You are an AI agent inside Obsidian.",
       intent === "edit" ? "You can inspect the user's vault and propose reviewed file edits with tools before answering." : "You can inspect the user's vault with read-only tools before answering.",
       "Use tools when the answer needs more context than the current conversation.",
+      searchScope ? `Current search scope: ${searchScope}. Keep searchNotes results within this scope unless the user explicitly asks to broaden it.` : "",
       "Cite file paths when using vault content.",
       "If the vault does not contain enough information, say so clearly.",
       "Do not say you will inspect, search, open, create, patch, or edit something later. If that action is needed, call a tool in the same response.",
@@ -258,6 +261,33 @@ export class AIChatClient {
       this.getVaultOverview(),
     ].join("\n");
   }
+
+  private cleanAssistantContent(content: string): string {
+    if (!this.getSettings().stripReasoningBlocks) {
+      return content;
+    }
+    return stripReasoningBlocks(content).trim();
+  }
+}
+
+function stripReasoningBlocks(content: string): string {
+  return content
+    .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "")
+    .replace(/<reasoning\b[^>]*>[\s\S]*?<\/reasoning>/gi, "")
+    .replace(/<thought\b[^>]*>[\s\S]*?<\/thought>/gi, "");
+}
+
+function describeSearchScope(searchScope: ChatSearchScope | undefined): string {
+  if (!searchScope || searchScope.mode === "vault") {
+    return "whole vault";
+  }
+  if (searchScope.mode === "current-note" && searchScope.path) {
+    return `current note (${searchScope.path})`;
+  }
+  if (searchScope.mode === "current-folder" && searchScope.path) {
+    return `current folder (${searchScope.path})`;
+  }
+  return "";
 }
 
 function parseToolArguments(rawArguments: string): Record<string, unknown> {

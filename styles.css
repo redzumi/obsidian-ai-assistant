@@ -14,6 +14,13 @@
   padding: 8px;
 }
 
+.vault-chat-agent-scope-select {
+  flex: 0 0 auto;
+  font-size: var(--font-ui-small);
+  height: 34px;
+  max-width: 96px;
+}
+
 .vault-chat-agent-intent-control {
   background: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);
@@ -166,6 +173,26 @@
   color: var(--text-accent);
   font-weight: 600;
   overflow-wrap: anywhere;
+}
+
+.vault-chat-agent-source-title {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  height: auto;
+  padding: 0;
+  text-align: left;
+  white-space: normal;
+}
+
+.vault-chat-agent-source-title:hover {
+  color: var(--text-accent-hover);
+}
+
+.vault-chat-agent-source-score {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  margin-top: 2px;
 }
 
 .vault-chat-agent-source-snippet,

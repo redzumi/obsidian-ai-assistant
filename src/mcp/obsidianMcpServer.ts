@@ -30,7 +30,7 @@ export class ObsidianMcpServer implements McpToolServer {
     }
 
     if (READ_ONLY_TOOL_NAMES.has(name)) {
-      return this.agentTools.execute(name, args);
+      return this.agentTools.execute(name, args, context);
     }
 
     if (name === "applyPendingEdit") {
@@ -49,7 +49,7 @@ export class ObsidianMcpServer implements McpToolServer {
     }
 
     if (EDIT_TOOL_NAMES.has(name)) {
-      return this.agentTools.execute(name, args);
+      return this.agentTools.execute(name, args, context);
     }
 
     return { content: `Unknown tool: ${name}.` };

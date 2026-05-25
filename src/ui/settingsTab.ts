@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting, SuggestModal } from "obsidian";
 import { DEFAULT_SETTINGS } from "../core/types";
 import ObsidianAIAssistantPlugin from "../main";
 
@@ -64,10 +64,34 @@ export class ObsidianAIAssistantSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Model")
       .setDesc("Any model accepted by your configured OpenAI-compatible provider.")
-      .addText((text) =>
+      .addText((text) => {
         text.setValue(this.plugin.settings.model).onChange(async (value) => {
           this.plugin.settings.model = value.trim() || DEFAULT_SETTINGS.model;
           await this.plugin.savePluginData();
+        });
+      })
+      .addButton((button) =>
+        button.setButtonText("Browse").onClick(async () => {
+          button.setDisabled(true);
+          button.setButtonText("Loading...");
+          try {
+            const models = await fetchProviderModels(this.plugin.settings);
+            if (models.length === 0) {
+              new Notice("Vault Chat Agent: provider returned no models.", 4000);
+              return;
+            }
+            new ModelPickerModal(this.app, models, async (model) => {
+              this.plugin.settings.model = model;
+              await this.plugin.savePluginData();
+              this.display();
+            }).open();
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            new Notice(`Vault Chat Agent: could not load models. ${message}`, 7000);
+          } finally {
+            button.setDisabled(false);
+            button.setButtonText("Browse");
+          }
         }),
       );
 
@@ -153,6 +177,16 @@ export class ObsidianAIAssistantSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName("Strip reasoning blocks")
+      .setDesc("Remove <think>, <reasoning>, and <thought> blocks from assistant output.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.stripReasoningBlocks).onChange(async (value) => {
+          this.plugin.settings.stripReasoningBlocks = value;
+          await this.plugin.savePluginData();
+        }),
+      );
+
+    new Setting(containerEl)
       .setName("Realtime indexing")
       .setDesc("Update the local index when vault files change.")
       .addToggle((toggle) =>
@@ -195,6 +229,75 @@ export class ObsidianAIAssistantSettingTab extends PluginSettingTab {
           }),
       );
   }
+}
+
+class ModelPickerModal extends SuggestModal<string> {
+  constructor(
+    app: App,
+    private readonly models: string[],
+    private readonly onChoose: (model: string) => Promise<void>,
+  ) {
+    super(app);
+    this.setPlaceholder("Search provider models...");
+  }
+
+  getSuggestions(query: string): string[] {
+    const normalized = query.trim().toLocaleLowerCase();
+    if (!normalized) {
+      return this.models.slice(0, 100);
+    }
+    return this.models.filter((model) => model.toLocaleLowerCase().includes(normalized)).slice(0, 100);
+  }
+
+  renderSuggestion(model: string, el: HTMLElement): void {
+    el.setText(model);
+  }
+
+  onChooseSuggestion(model: string): void {
+    void this.onChoose(model);
+  }
+}
+
+async function fetchProviderModels(settings: { apiBaseUrl: string; apiKey: string }): Promise<string[]> {
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+  };
+  if (settings.apiKey.trim()) {
+    headers.Authorization = `Bearer ${settings.apiKey.trim()}`;
+  }
+
+  const response = await fetch(`${settings.apiBaseUrl.replace(/\/$/, "")}/v1/models`, {
+    method: "GET",
+    headers,
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Request failed (${response.status}): ${errorText}`);
+  }
+
+  const data = (await response.json()) as unknown;
+  const models = parseModelIds(data);
+  return Array.from(new Set(models)).sort((a, b) => a.localeCompare(b));
+}
+
+function parseModelIds(data: unknown): string[] {
+  if (!isRecord(data)) {
+    return [];
+  }
+  const rawModels = data.data;
+  if (!Array.isArray(rawModels)) {
+    return [];
+  }
+  return rawModels.flatMap((item) => {
+    if (!isRecord(item)) {
+      return [];
+    }
+    return typeof item.id === "string" && item.id.trim() ? [item.id.trim()] : [];
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function detectProviderPreset(apiBaseUrl: string): ProviderPreset {

@@ -1,5 +1,5 @@
 import { ItemView, MarkdownRenderer, Notice, setIcon, TFolder, WorkspaceLeaf } from "obsidian";
-import { AgentToolExecution, AgentToolExecutor, ChatIntent, DebugLogEntry, PendingEdit, SearchResult, WorkingSetItem } from "../core/types";
+import { AgentToolExecution, AgentToolExecutor, ChatIntent, ChatSearchScope, ChatSearchScopeMode, DebugLogEntry, PendingEdit, SearchResult, WorkingSetItem } from "../core/types";
 import { ObsidianMcpServer, summarizePendingEdit } from "../mcp/obsidianMcpServer";
 import { AIChatClient } from "../services/aiChatClient";
 
@@ -17,6 +17,7 @@ export class ChatView extends ItemView {
   private messages: ChatMessage[] = [];
   private intent: ChatIntent;
   private lastSources: SearchResult[] = [];
+  private searchScopeMode: ChatSearchScopeMode = "vault";
   private pendingEdits: PendingEdit[] = [];
   private workingSet: WorkingSetItem[] = [];
   private debugLogs: DebugLogEntry[] = [];
@@ -73,6 +74,7 @@ export class ChatView extends ItemView {
 
     const toolbar = this.containerEl.createDiv({ cls: "vault-chat-agent-toolbar" });
     this.renderIntentControl(toolbar);
+    this.renderScopeControl(toolbar);
 
     const debugButton = toolbar.createEl("button", {
       cls: this.expandedPanels.debug ? "vault-chat-agent-toolbar-button is-active" : "vault-chat-agent-toolbar-button",
@@ -161,6 +163,27 @@ export class ChatView extends ItemView {
     }
   }
 
+  private renderScopeControl(toolbar: HTMLElement): void {
+    const scopeSelect = toolbar.createEl("select", {
+      cls: "vault-chat-agent-scope-select",
+      attr: { "aria-label": "Search scope" },
+    });
+    const scopes: Array<{ mode: ChatSearchScopeMode; label: string }> = [
+      { mode: "vault", label: "Vault" },
+      { mode: "current-note", label: "Note" },
+      { mode: "current-folder", label: "Folder" },
+    ];
+    for (const scope of scopes) {
+      scopeSelect.createEl("option", { value: scope.mode, text: scope.label });
+    }
+    scopeSelect.value = this.searchScopeMode;
+    scopeSelect.disabled = this.isSending;
+    this.registerDomEvent(scopeSelect, "change", () => {
+      this.searchScopeMode = isChatSearchScopeMode(scopeSelect.value) ? scopeSelect.value : "vault";
+      this.render();
+    });
+  }
+
   private getEmptyStateText(): string {
     if (this.intent === "edit") {
       return "Ask for reviewed changes. Edits stay pending until you apply them.";
@@ -193,8 +216,11 @@ export class ChatView extends ItemView {
 
     for (const result of this.lastSources) {
       const sourceEl = body.createDiv({ cls: "vault-chat-agent-source" });
-      const title = sourceEl.createDiv({ cls: "vault-chat-agent-source-title" });
-      title.setText(result.chunk.filePath);
+      const title = sourceEl.createEl("button", { cls: "vault-chat-agent-source-title", text: result.chunk.filePath });
+      this.registerDomEvent(title, "click", () => {
+        void this.app.workspace.openLinkText(result.chunk.filePath, "", false);
+      });
+      sourceEl.createDiv({ cls: "vault-chat-agent-source-score", text: `Score ${result.score.toFixed(3)}` });
       sourceEl.createDiv({
         cls: "vault-chat-agent-source-snippet",
         text: result.chunk.content.slice(0, 280),
@@ -400,6 +426,7 @@ export class ChatView extends ItemView {
     try {
       this.statusText = this.intent === "edit" ? "Preparing reviewed changes..." : "Inspecting the vault...";
       this.render();
+      const searchScope = this.createSearchScope();
       const result = await this.aiChatClient.completeWithAgent(
         content,
         history,
@@ -413,6 +440,7 @@ export class ChatView extends ItemView {
         },
         {
           intent: this.intent,
+          searchScope,
           pendingEdits: this.pendingEdits.map(summarizePendingEdit),
           allowedCapabilities: [
             "read",
@@ -452,6 +480,25 @@ export class ChatView extends ItemView {
       (id) => this.applyPendingEditTool(id),
       () => this.applyAllPendingEditsTool(),
     );
+  }
+
+  private createSearchScope(): ChatSearchScope {
+    if (this.searchScopeMode === "vault") {
+      return { mode: "vault" };
+    }
+
+    const file = this.app.workspace.getActiveFile();
+    if (!file) {
+      new Notice("Vault Chat Agent: no active note for selected scope; using whole vault.", 4000);
+      return { mode: "vault" };
+    }
+
+    if (this.searchScopeMode === "current-note") {
+      return { mode: "current-note", path: file.path };
+    }
+
+    const folderPath = file.parent?.path ?? "";
+    return folderPath ? { mode: "current-folder", path: folderPath } : { mode: "vault" };
   }
 
   private async applyPendingEditTool(id: string): Promise<AgentToolExecution> {
@@ -570,6 +617,10 @@ function formatDebugTime(timestamp: string): string {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
+}
+
+function isChatSearchScopeMode(value: string): value is ChatSearchScopeMode {
+  return value === "vault" || value === "current-note" || value === "current-folder";
 }
 
 function mergeWorkingSet(existing: WorkingSetItem[], ...groups: WorkingSetItem[][]): WorkingSetItem[] {

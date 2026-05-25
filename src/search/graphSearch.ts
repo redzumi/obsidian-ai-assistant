@@ -9,13 +9,13 @@ export class GraphSearchEngine {
     private readonly baseSearch: HybridSearchEngine,
   ) {}
 
-  search(query: string, topK: number): SearchResult[] {
-    const baseResults = this.baseSearch.search(query, Math.max(topK, Math.ceil(topK * 1.5)));
-    return this.expandResults(baseResults, topK);
+  search(query: string, topK: number, filter?: (chunk: IndexedChunk) => boolean): SearchResult[] {
+    const baseResults = this.baseSearch.search(query, Math.max(topK, Math.ceil(topK * 1.5)), filter);
+    return this.expandResults(baseResults, topK, filter);
   }
 
-  private expandResults(baseResults: SearchResult[], topK: number): SearchResult[] {
-    const allChunks = this.baseSearch.getChunks();
+  private expandResults(baseResults: SearchResult[], topK: number, filter?: (chunk: IndexedChunk) => boolean): SearchResult[] {
+    const allChunks = filter ? this.baseSearch.getChunks().filter(filter) : this.baseSearch.getChunks();
     const chunksByPath = groupChunksByPath(allChunks);
     const results = new Map<string, SearchResult>();
 
